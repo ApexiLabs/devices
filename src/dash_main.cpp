@@ -259,16 +259,25 @@ void renderStatus() {
       frame.setTextColor(colours[i],TFT_BLACK);
       frame.setTextSize(layout.scale);
       int font=6; // 48-pixel digits; up to 96 pixels in single-reading mode.
-      const int maxWidth=DashDisplayLayout::valueWidth(count);
+      const int maxWidth=DashDisplayLayout::valueWidth(count)-DashDisplayLayout::digitSlant;
       if (frame.textWidth(values[i],font)>maxWidth) frame.setTextSize(1);
       if (frame.textWidth(values[i],font)>maxWidth) font=4;
       if (frame.textWidth(values[i],font)>maxWidth) { values[i]="Out of range"; font=2; }
-      frame.drawString(values[i],120,layout.valueY,font);
+      if(font!=2){
+        const int width=frame.textWidth(values[i],font),height=frame.fontHeight(font);
+        const int x=120-(width+DashDisplayLayout::digitSlant)/2,y=layout.valueY-height/2;
+        frame.setTextDatum(TL_DATUM);
+        frame.drawString(values[i],x,y,font);
+        DashDisplayLayout::italicize(frame,x,y,width,height);
+        frame.setTextDatum(MC_DATUM);
+      }else frame.drawString(values[i],120,layout.valueY,font);
       frame.setTextSize(1); frame.setTextColor(colours[i]==TFT_WHITE?TFT_LIGHTGREY:colours[i],TFT_BLACK);
       if(details[i]=="C"){
-        // Font 1 is not guaranteed to contain a Unicode degree glyph.
-        frame.drawCircle(116,layout.detailY-3,1,colours[i]==TFT_WHITE?TFT_LIGHTGREY:colours[i]);
-        frame.drawString("C",123,layout.detailY,1);
+        // Bitmap fonts do not reliably contain a Unicode degree glyph.
+        frame.drawCircle(114,layout.detailY-5,2,colours[i]==TFT_WHITE?TFT_LIGHTGREY:colours[i]);
+        frame.drawString("C",123,layout.detailY,2);
+      }else if(colours[i]==TFT_WHITE || colours[i]==TFT_RED){
+        frame.drawString(fitCaption(details[i],DashDisplayLayout::unitWidth),120,layout.detailY,2);
       }else frame.drawString(fitCaption(details[i],DashDisplayLayout::detailWidth),120,layout.detailY,1);
     }
   } else if(!alarmCount) {

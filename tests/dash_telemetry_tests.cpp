@@ -7,6 +7,19 @@
 #include <iostream>
 using namespace DashTelemetry;
 int main() {
+  struct Canvas {
+    int pixels[5][20]{};
+    int readPixel(int x,int y){assert(x>=0&&x<20&&y>=0&&y<5);return pixels[y][x];}
+    void drawPixel(int x,int y,int c){assert(x>=0&&x<20&&y>=0&&y<5);pixels[y][x]=c;}
+  } canvas;
+  for(int y=0;y<5;++y)for(int x=0;x<6;++x)canvas.pixels[y][2+x]=1+y*6+x;
+  DashDisplayLayout::italicize(canvas,2,0,6,5);
+  for(int y=0;y<5;++y){
+    const int shift=8*(4-y)/4;
+    for(int x=0;x<6;++x)assert(canvas.pixels[y][2+shift+x]==1+y*6+x);
+    for(int x=0;x<shift;++x)assert(canvas.pixels[y][2+x]==0);
+  }
+  DashDisplayLayout::italicize(canvas,0,0,1,1); // Degenerate height is safe.
   DashDiagnostics::Log log;
   for(unsigned i=0;i<70;++i)log.add(i,0,5,i);
   assert(log.size()==64 && log.at(0).ms==6 && log.at(63).ms==69);
@@ -32,6 +45,7 @@ int main() {
   constexpr auto single=DashDisplayLayout::row(1,0);
   static_assert(50*50+90*90<104*104,"Top caption clears inner arc");
   static_assert(44*44+92*92<104*104,"Bottom detail clears inner arc");
+  static_assert(32*32+96*96<104*104,"Enlarged units clear inner arc");
   static_assert(DashDisplayLayout::labelWidth==100 && DashDisplayLayout::detailWidth==88);
   static_assert(DashDisplayLayout::valueWidth(2)==124 && DashDisplayLayout::valueWidth(1)==170);
   static_assert(62*62+82*82<104*104,"Bottom large value clears inner arc");
@@ -40,7 +54,9 @@ int main() {
   static_assert(single.valueY==118 && single.scale==2, "One value fills the centre");
   static_assert(top.scale==1 && bottom.scale==1, "Two values use 48-pixel digits");
   static_assert(top.detailY < bottom.labelY, "Two reading groups do not overlap");
-  static_assert(top.detailY+4<110 && bottom.labelY-8>130,"Alarm band clears both rows");
+  static_assert(top.detailY+8<=110 && bottom.labelY-8>130,"Alarm band clears both rows");
+  static_assert(top.valueY+24<=top.detailY-8 && bottom.valueY+24<=bottom.detailY-8,"Digits clear enlarged units");
+  static_assert(top.labelY+8<=top.valueY-24 && bottom.labelY+8<=bottom.valueY-24,"Labels clear digits");
   static_assert(single.labelY+8 < single.valueY-48, "Large digits clear the label");
   static_assert(single.valueY+48 < single.detailY-8, "Large digits clear the units");
   Model m;

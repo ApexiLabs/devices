@@ -75,6 +75,8 @@ The web UI pairs the native-size LCD preview with sensor readings in single-colu
 
 The preview keeps only its live capture status and controls; sensor timing is summarised as the configured refresh interval and frequency.
 
+Temperature readings are displayed as °C; the transport and saved-rule unit remains `C` for compatibility.
+
 Dash troubleshooting logging is enabled in RAM. Use **Dash Link → Download troubleshooting log** before reboot/OTA to save receive counters, sample gaps, and the latest 64 state transitions. See [diagnostic interpretation](docs/hardware-setup.md#dash-troubleshooting-log).
 
 LCD and web readings hold the last valid number in amber during stale data, disconnection, or sensor faults, with an explicit status label. Held numbers are never marked live; a sensor with no valid history still shows no value. History resets on Dash reboot.

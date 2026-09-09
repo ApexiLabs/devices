@@ -83,7 +83,8 @@ el('rate').textContent=s.refreshMs+' ms ('+(1000/s.refreshMs).toFixed(1)+' Hz)';
 const box=el('readings');box.replaceChildren();
 if(!s.sensors.length)box.textContent='Waiting for Logger telemetry…';
 for(const v of s.sensors){const row=document.createElement('div');row.className='reading';const name=document.createElement('span');name.textContent=v.name;const value=document.createElement('strong');
-value.textContent=v.valid?v.value.toFixed(1)+' '+v.units:Number.isFinite(v.lastGoodValue)?v.lastGoodValue.toFixed(1)+' '+v.units+' · '+(v.displayState||'Stale')+' (held)':!v.fresh?'Unavailable — stale':v.fault==='none'?'No valid sample':v.fault.replaceAll('_',' ');
+const units=v.units==='C'?'°C':v.units;
+value.textContent=v.valid?v.value.toFixed(1)+' '+units:Number.isFinite(v.lastGoodValue)?v.lastGoodValue.toFixed(1)+' '+units+' · '+(v.displayState||'Stale')+' (held)':!v.fresh?'Unavailable — stale':v.fault==='none'?'No valid sample':v.fault.replaceAll('_',' ');
 value.className=v.valid&&v.alarm?'bad':v.valid?'ok':'warn';row.append(name,value);box.append(row)}
 const key=JSON.stringify(s.sensors.map(v=>[v.id,v.name]));
 if(!configured||key!==catalogKey){for(let i=0;i<2;i++){const select=el('slot'+i),selected=configured?select.value:s.slots[i];select.replaceChildren();
@@ -101,7 +102,7 @@ if(!gaugesConfigured){gaugesConfigured=true;gaugeControls=[];el('gauge-settings'
 rules.filter(r=>!gaugeControls.some(f=>f.id===r.id)).slice(0,8-gaugeControls.length).forEach(r=>{
  const index=gaugeControls.length;
  const group=document.createElement('fieldset');group.className='gauge-fields';const legend=document.createElement('legend');
- const sensor=s.sensors.find(v=>v.id===r.id);legend.textContent=(sensor?sensor.name:r.id)+' ('+(r.units||'unitless')+')';group.append(legend);
+ const sensor=s.sensors.find(v=>v.id===r.id);legend.textContent=(sensor?sensor.name:r.id)+' ('+(r.units==='C'?'°C':r.units||'unitless')+')';group.append(legend);
  const fields={id:r.id,units:r.units};
  const number=(parent,key,label,value)=>{const wrap=document.createElement('div'),l=document.createElement('label'),input=document.createElement('input');input.id='gauge-'+index+'-'+key;l.htmlFor=input.id;l.textContent=label;input.type='number';input.step='any';input.min=-1000000;input.max=1000000;input.required=true;input.value=value;fields[key]=input;wrap.append(l,input);parent.append(wrap)};
  const points=document.createElement('div');points.className='colour-points';['Blue','Green','Yellow','Red'].forEach((label,j)=>number(points,'point'+j,label+' at',r.points[j]));group.append(points);

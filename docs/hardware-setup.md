@@ -252,6 +252,8 @@ Compact-card verification (2026-09-08): host checks and Dash build passed. OTA e
 
 ### Configurable gauge colours and alarms
 
+Celsius units are presented as °C on the LCD, web readings, settings legends and offline preview. Telemetry and rule matching retain the canonical `C` unit. The LCD draws a small degree ring beside C rather than relying on a Unicode glyph in its bitmap font.
+
 The redesign adapts the reference to a 240×240 display: black face, highlighted fixed-width arcs, large white numerals, colour-matched labels, and a conditional red alarm band. It intentionally omits the reference's dense carbon texture and decorative traces to retain contrast at native resolution. Arc angle, radius and width never depend on the measurement: only colour changes. The sprite remains RGB332, so smooth RGB interpolation is quantised by the panel buffer. No flashing animation is used.
 
 In the authenticated Dash `/settings` page, each rule is keyed by sensor ID **and units**, not display-slot position:

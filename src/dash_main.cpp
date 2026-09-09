@@ -265,7 +265,11 @@ void renderStatus() {
       if (frame.textWidth(values[i],font)>maxWidth) { values[i]="Out of range"; font=2; }
       frame.drawString(values[i],120,layout.valueY,font);
       frame.setTextSize(1); frame.setTextColor(colours[i]==TFT_WHITE?TFT_LIGHTGREY:colours[i],TFT_BLACK);
-      frame.drawString(fitCaption(details[i],DashDisplayLayout::detailWidth),120,layout.detailY,1);
+      if(details[i]=="C"){
+        // Font 1 is not guaranteed to contain a Unicode degree glyph.
+        frame.drawCircle(116,layout.detailY-3,1,colours[i]==TFT_WHITE?TFT_LIGHTGREY:colours[i]);
+        frame.drawString("C",123,layout.detailY,1);
+      }else frame.drawString(fitCaption(details[i],DashDisplayLayout::detailWidth),120,layout.detailY,1);
     }
   } else if(!alarmCount) {
     frame.setTextColor(TFT_WHITE,TFT_BLACK);

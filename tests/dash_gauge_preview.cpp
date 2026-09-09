@@ -13,7 +13,7 @@ int main(){
     const float value=scenario==0?90:145;bool fresh=scenario!=2;temp.highEnabled=scenario!=3;
     std::cout<<"{\"name\":\""<<(scenario==0?"Normal":scenario==1?"High alarm":scenario==2?"Stale / held":"Alarm disabled")<<"\",\"alarm\":"<<(alarm(&temp,value,fresh)!=Alarm::None?"true":"false")<<",\"rows\":[";
     for(unsigned i=0;i<2;++i){if(i)std::cout<<",";const auto row=DashDisplayLayout::row(2,i);
-      std::cout<<"{\"label\":\""<<(i?"Oil Temp":"Oil Pressure")<<"\",\"value\":\""<<(i?value:4)<<"\",\"units\":\""<<(!fresh?"Stale":i?"C":"bar")<<"\",\"colour\":"<<colour(i?&temp:&pressure,i?value:4,fresh)<<",\"labelY\":"<<row.labelY<<",\"valueY\":"<<row.valueY<<",\"detailY\":"<<row.detailY<<",\"held\":"<<(!fresh?"true":"false")<<"}";
+      std::cout<<"{\"label\":\""<<(i?"Oil Temp":"Oil Pressure")<<"\",\"value\":\""<<(i?value:4)<<"\",\"units\":\""<<(!fresh?"Stale":i?"°C":"bar")<<"\",\"colour\":"<<colour(i?&temp:&pressure,i?value:4,fresh)<<",\"labelY\":"<<row.labelY<<",\"valueY\":"<<row.valueY<<",\"detailY\":"<<row.detailY<<",\"held\":"<<(!fresh?"true":"false")<<"}";
     }std::cout<<"]}";
   }std::cout<<"]";
 }

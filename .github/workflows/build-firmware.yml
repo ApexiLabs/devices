@@ -46,6 +46,9 @@ jobs:
             PLATFORMIO_SETTING_ENABLE_TELEMETRY=no \
             pio run -e logger-nodemcuv2 -e logger-esp32 -e logger-tinyc6 -e dash-waveshare-s3-128
 
+      - name: Verify gauge JSON integration with installed dependencies
+        run: ./scripts/run-host-tests.sh
+
       - name: Prepare firmware artifacts
         run: |
           mkdir -p dist

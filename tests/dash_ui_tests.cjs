@@ -62,3 +62,25 @@ async function previewTests(){
   console.log('Dash UI tests passed');
 }
 previewTests().catch(error=>{console.error(error);process.exitCode=1});
+
+const settingsNodes=new Map();
+const settingsContext=vm.createContext({document:{getElementById(id){if(!settingsNodes.has(id))settingsNodes.set(id,new Node());return settingsNodes.get(id)},createElement(){return new Node()}},location:{pathname:'/settings'},setTimeout(){},fetch:async()=>({ok:true,json:async()=>({csrf:'test'})})});
+vm.runInContext(script.replace(/poll\(\);\s*$/,''),settingsContext);
+const rule={id:'oil_pressure',units:'bar',points:[0,2,6,8],low:1,high:7,lowEnabled:false,highEnabled:false};
+settingsContext.renderGauges({gauges:[rule],sensors:[]});
+assert.equal(settingsContext.readGaugeRules()[0].highEnabled,false);
+vm.runInContext('gaugeControls[0].point1.value=3',settingsContext);
+settingsContext.renderGauges({gauges:[rule],sensors:[{id:'new_sensor',name:'New',units:'C'}]});
+assert.equal(settingsContext.readGaugeRules().length,2,'Late sensor gets a rule without losing edits');
+assert.equal(settingsContext.readGaugeRules()[0].points[1],3);
+vm.runInContext('gaugeControls[0].point1.value=0',settingsContext);
+assert.throws(()=>settingsContext.readGaugeRules(),/increase/);
+vm.runInContext('gaugeControls[0].point1.value=3;gaugeControls[0].lowEnabled.checked=true;gaugeControls[0].highEnabled.checked=true;gaugeControls[0].low.value=9',settingsContext);
+assert.throws(()=>settingsContext.readGaugeRules(),/below/);
+vm.runInContext('gaugeControls[0].remove.checked=true',settingsContext);
+assert.equal(settingsContext.readGaugeRules().length,1);
+context.renderSensors({...data,sensors:[{id:'x',name:'Hidden Sensor',units:'bar',valid:true,fresh:true,value:9,alarm:'HIGH'}]});
+assert.equal(nodes.get('alarm-state').hidden,false);
+assert.equal(nodes.get('alarm-state').textContent,'Alarm: Hidden Sensor HIGH');
+context.renderSensors({...data,sensors:[{id:'x',name:'X',valid:false,fresh:false,alarm:'HIGH'}]});
+assert.equal(nodes.get('alarm-state').hidden,true,'Stale data cannot show alarm');

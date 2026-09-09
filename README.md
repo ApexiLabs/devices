@@ -69,7 +69,7 @@ Primary source files:
 
 The small LCD prioritises one or two large readings. Hide either display slot for a single centred value; keep both active for two stacked values. Buffered rendering skips unchanged frames to avoid erase/redraw flicker. Sensor selection and refresh timing remain in the Dash web UI.
 
-The gauge-inspired black face uses cyan/gold perimeter accents and matching sensor labels, white measurements, and amber fault text. Accents identify slots; they are not measurement scales.
+The gauge-inspired black face uses fixed-size, highlighted arcs that fade blue → green → yellow → red through per-sensor colour points. Fresh readings are white; stale/held values stay amber with muted arcs. Optional low/high thresholds produce a red alarm band only when fresh, valid readings breach an enabled limit. Configure colour points and alarm limits in Dash `/settings`; alarms start disabled. See [gauge configuration](docs/hardware-setup.md#configurable-gauge-colours-and-alarms).
 
 The web UI pairs the native-size LCD preview with sensor readings in single-column cards on desktop, stacking them on mobile. Link status uses compact text; background polling leaves the manual refresh button visually stable.
 

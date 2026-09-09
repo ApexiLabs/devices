@@ -32,3 +32,18 @@ node "$ROOT_DIR/tests/dash_ui_tests.cjs"
 /usr/bin/c++ -std=c++17 -Wall -Wextra -Werror -I"$ROOT_DIR/include" \
   "$ROOT_DIR/tests/dash_telemetry_tests.cpp" -o "$BUILD_DIR/dash_telemetry_tests"
 "$BUILD_DIR/dash_telemetry_tests"
+
+/usr/bin/c++ -std=c++17 -Wall -Wextra -Werror -I"$ROOT_DIR/include" \
+  "$ROOT_DIR/tests/dash_gauge_tests.cpp" -o "$BUILD_DIR/dash_gauge_tests"
+"$BUILD_DIR/dash_gauge_tests"
+JSON_INCLUDE="$ROOT_DIR/.pio/libdeps/dash-waveshare-s3-128/ArduinoJson/src"
+if [ ! -d "$JSON_INCLUDE" ]; then
+  JSON_INCLUDE="$ROOT_DIR/.pio/libdeps/logger-nodemcuv2/ArduinoJson/src"
+fi
+if [ -d "$JSON_INCLUDE" ]; then
+  /usr/bin/c++ -std=c++17 -Wall -Wextra -Werror -DTEST_GAUGE_JSON -I"$ROOT_DIR/include" -I"$JSON_INCLUDE" \
+    "$ROOT_DIR/tests/dash_gauge_tests.cpp" -o "$BUILD_DIR/dash_gauge_tests"
+  "$BUILD_DIR/dash_gauge_tests"
+else
+  echo "Dash gauge JSON integration tests skipped: build Dash once to install ArduinoJson"
+fi

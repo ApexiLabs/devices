@@ -19,6 +19,7 @@
 #include "DashLcdBitmap.h"
 #include "DashDiagnostics.h"
 #include "SystemEvents.h"
+#include "DashGaugeJson.h"
 
 namespace {
 
@@ -48,9 +49,10 @@ bool otaReady = false;
 constexpr bool otaEnabled = AppConfig::kOta.password[0] != '\0';
 Preferences preferences;
 struct DisplaySettings {
-  uint32_t magic = 0x44534831;
+  uint32_t magic = 0x44534832;
   uint32_t refreshMs = 1000;
   char slots[2][16]{}; // Empty = automatic, '-' = hidden, otherwise stable sensor ID.
+  DashGauge::Rules gauges;
 } settings;
 bool storageReady = false;
 String csrfToken;
@@ -199,14 +201,22 @@ String fitCaption(String text,int width) {
 
 void renderStatus() {
   const bool ready=loggerReady, link=bleConnected;
+  const auto readings=snapshotTelemetry();
   const uint32_t now=millis();
   lastRenderMs=now; renderedLoggerReady=ready; renderedBleConnected=link;
   if (!lcdBuffered) return;
-  const auto readings=snapshotTelemetry();
   String labels[2], values[2], details[2];
   uint16_t colours[2];
   uint16_t accents[2];
   unsigned count=0;
+  unsigned alarmCount=0;
+  String alarmLabel;
+  // Evaluate all configured sensors, including ones not assigned a display slot.
+  for(unsigned i=0;i<readings.count;++i){const auto &s=readings.sensors[i];
+    const auto a=DashGauge::alarm(DashGauge::find(settings.gauges,s.id,s.units),s.value,s.fresh(link&&ready,now)&&s.valid&&s.fault==SensorFault::None);
+    if(a!=DashGauge::Alarm::None){++alarmCount;alarmLabel=String(DashGauge::alarmName(a))+" "+s.name;}
+  }
+  if(alarmCount>1)alarmLabel=String(alarmCount)+" SENSOR ALARMS";
   String key=String(ready)+":"+String(link);
   if (ready || readings.count) {
     for (size_t slot=0;slot<2;++slot) {
@@ -218,26 +228,32 @@ void renderStatus() {
       labels[count]=s ? s->name : "Waiting for sensor";
       values[count]=valid ? String(s->value,1) : s && s->hasLastGood ? String(s->lastGoodValue,1) : String("--");
       details[count]=valid ? String(s->units) : !s ? "No data" : !link || !ready ? "Disconnected" : !fresh ? "Stale" : "Sensor fault";
-      colours[count]=valid && !s->warning ? TFT_WHITE : TFT_ORANGE;
-      accents[count]=slot==0 ? 0x05FF : 0xFEA0; // Cyan / warm gold: slot identity, not a scale.
+      const auto *rule=s?DashGauge::find(settings.gauges,s->id,s->units):nullptr;
+      const auto alarm=DashGauge::alarm(rule,s?s->value:0,valid);
+      colours[count]=!valid?TFT_ORANGE:alarm!=DashGauge::Alarm::None?TFT_RED:TFT_WHITE;
+      accents[count]=DashGauge::colour(rule,s?s->value:0,valid);
       key += "|"+labels[count]+"|"+values[count]+"|"+details[count]+"|"+String(colours[count])+"|"+String(accents[count]);
       ++count;
     }
   }
+  key+="|alarm:"+alarmLabel;
   // Only visible changes require an LCD transfer; timestamps and polling do not.
   if (key==lastFrameKey) return;
   lastFrameKey=key;
   frame.fillSprite(TFT_BLACK);
   frame.setTextDatum(MC_DATUM); frame.setTextSize(1);
   if (count) {
-    // Reference direction: black instrument face, perimeter accents, large digits.
-    // Arcs are fixed identity marks; no invented sensor min/max or progress fill.
-    frame.drawCircle(120,120,115,0x2104);
+    // Fixed geometry: only the colour changes. A faint rim and stepped highlights
+    // borrow the reference's instrument styling without shrinking the numerals.
+    frame.drawCircle(120,120,118,0x03ef);
     for (unsigned i=0;i<count;++i) {
       const auto layout=DashDisplayLayout::row(count,i);
-      frame.drawSmoothArc(120,120,110,106,count==1?45:i==0?105:285,
-                          count==1?315:i==0?255:359,accents[i],TFT_BLACK,true);
-      if(count==2 && i==1)frame.drawSmoothArc(120,120,110,106,0,75,accents[i],TFT_BLACK,true);
+      const unsigned start=count==1?40:i==0?102:282,end=count==1?320:i==0?258:360;
+      frame.drawSmoothArc(120,120,114,104,start,end,accents[i],TFT_BLACK,false);
+      if(count==2 && i==1)frame.drawSmoothArc(120,120,114,104,0,78,accents[i],TFT_BLACK,false);
+      const auto edge=DashGauge::highlight(accents[i]);
+      frame.drawSmoothArc(120,120,114,112,start,end,edge,TFT_BLACK,false);
+      if(count==2 && i==1)frame.drawSmoothArc(120,120,114,112,0,78,edge,TFT_BLACK,false);
       frame.setTextSize(1); frame.setTextColor(accents[i],TFT_BLACK);
       frame.drawString(fitCaption(labels[i],DashDisplayLayout::labelWidth),120,layout.labelY,2);
       frame.setTextColor(colours[i],TFT_BLACK);
@@ -248,14 +264,22 @@ void renderStatus() {
       if (frame.textWidth(values[i],font)>maxWidth) font=4;
       if (frame.textWidth(values[i],font)>maxWidth) { values[i]="Out of range"; font=2; }
       frame.drawString(values[i],120,layout.valueY,font);
-      frame.setTextSize(1); frame.setTextColor(colours[i]==TFT_WHITE?TFT_LIGHTGREY:TFT_ORANGE,TFT_BLACK);
-      frame.drawString(fitCaption(details[i],DashDisplayLayout::detailWidth),120,layout.detailY,2);
+      frame.setTextSize(1); frame.setTextColor(colours[i]==TFT_WHITE?TFT_LIGHTGREY:colours[i],TFT_BLACK);
+      frame.drawString(fitCaption(details[i],DashDisplayLayout::detailWidth),120,layout.detailY,1);
     }
-  } else {
+  } else if(!alarmCount) {
     frame.setTextColor(TFT_WHITE,TFT_BLACK);
     frame.drawString(ready ? "NO READINGS" : link ? "CONNECTING" : "WAITING",120,108,4);
     frame.setTextColor(TFT_LIGHTGREY,TFT_BLACK);
     frame.drawString(ready ? "Choose a sensor in web UI" : "Waiting for Logger",120,145,2);
+  }
+  if(alarmCount){
+    const int y=DashDisplayLayout::alarmY(count);frame.setTextSize(1);
+    const int halfWidth=count==1?60:104;
+    frame.fillRect(120-halfWidth,y-10,halfWidth*2,20,0x4000);
+    frame.drawFastHLine(120-halfWidth,y-10,halfWidth*2,TFT_RED);
+    frame.drawFastHLine(120-halfWidth,y+10,halfWidth*2,TFT_RED);
+    frame.setTextColor(TFT_WHITE,0x4000);frame.drawString(fitCaption("! "+alarmLabel,halfWidth*2-8),120,y,2);
   }
   pushFrame();
 }
@@ -290,7 +314,7 @@ String statusJson() {
   json += ",\"settingsWritable\":";
   json += storageReady && otaEnabled ? "true" : "false";
   json += ",\"slots\":[\"" + String(settings.slots[0]) + "\",\"" + settings.slots[1] + "\"],\"sensors\":";
-  StaticJsonDocument<4096> sensorDoc;
+  StaticJsonDocument<6144> sensorDoc;
   auto array = sensorDoc.to<JsonArray>();
   const auto readings = snapshotTelemetry();
   for (size_t i=0;i<readings.count;++i) {
@@ -300,6 +324,8 @@ String statusJson() {
     const bool fresh = s.fresh(bleConnected && loggerReady,millis());
     obj["fresh"]=fresh; obj["valid"]=fresh && s.valid && s.fault == SensorFault::None;
     obj["warning"]=s.warning; obj["fault"]=sensorFaultToString(s.fault);
+    const auto *rule=DashGauge::find(settings.gauges,s.id,s.units);
+    obj["alarm"]=DashGauge::alarmName(DashGauge::alarm(rule,s.value,fresh&&s.valid&&s.fault==SensorFault::None));
     obj["displayState"]=!bleConnected || !loggerReady ? "Disconnected" : !fresh ? "Stale" : !s.valid || s.fault!=SensorFault::None ? "Sensor fault" : "Live";
     if(s.hasLastGood){obj["lastGoodValue"]=s.lastGoodValue;obj["lastGoodAgeMs"]=uint32_t(millis()-s.lastGoodMs);}
     else {obj["lastGoodValue"]=nullptr;obj["lastGoodAgeMs"]=nullptr;}
@@ -307,6 +333,8 @@ String statusJson() {
     else obj["value"] = nullptr;
   }
   serializeJson(array,json);
+  json += ",\"gauges\":";
+  sensorDoc.clear();auto gauges=sensorDoc.to<JsonArray>();DashGauge::toJson(gauges,settings.gauges);serializeJson(gauges,json);
   json += "}";
   return json;
 }
@@ -438,8 +466,8 @@ void beginWebUi() {
       webServer.requestAuthentication(DIGEST_AUTH,"Apexi Dash"); return;
     }
     if (!storageReady) { webServer.send(503,"text/plain","Settings storage unavailable"); return; }
-    StaticJsonDocument<512> doc;
-    if (webServer.arg("plain").length()>512 || deserializeJson(doc,webServer.arg("plain")) ||
+    DynamicJsonDocument doc(8192);
+    if (webServer.arg("plain").length()>4096 || deserializeJson(doc,webServer.arg("plain")) ||
         !doc["csrf"].is<const char *>() || csrfToken != doc["csrf"].as<const char *>()) {
       webServer.send(400,"text/plain","Invalid request or settings token"); return;
     }
@@ -448,13 +476,16 @@ void beginWebUi() {
       webServer.send(400,"text/plain","Choose two slots and 250–5000 ms in 250 ms steps"); return;
     }
     DisplaySettings next=settings; next.refreshMs=doc["refreshMs"];
+    if(doc.containsKey("gauges") && !DashGauge::fromJson(doc["gauges"],next.gauges)){
+      webServer.send(400,"text/plain","Use unique sensor IDs, four increasing finite colour points, and low < high when both alarms are enabled");return;
+    }
     for (size_t i=0;i<2;++i) {
       if (!doc["slots"][i].is<const char *>()) { webServer.send(400); return; }
       const char *id=doc["slots"][i];
       if (!validSlot(id)) { webServer.send(400,"text/plain","Invalid sensor ID"); return; }
       memset(next.slots[i],0,16); strcpy(next.slots[i],id);
     }
-    if (memcmp(&settings,&next,sizeof(next)) && preferences.putBytes("display",&next,sizeof(next))!=sizeof(next)) {
+    if (memcmp(&settings,&next,sizeof(next)) && preferences.putBytes("display-v2",&next,sizeof(next))!=sizeof(next)) {
       webServer.send(500,"text/plain","Could not save settings"); return;
     }
     settings=next; renderStatus(); webServer.send(200,"application/json","{\"saved\":true}");
@@ -540,10 +571,23 @@ void setup() {
     Serial0.println("DASH_LCD=buffer allocation failed");
   }
   storageReady=preferences.begin("dash-display",false);
+  for(unsigned i=0;i<AppConfig::kSensorCount && i<DashGauge::kMaxRules;++i){
+    const auto &s=AppConfig::kSensorConfigs[i];auto &r=settings.gauges.entries[i];
+    strlcpy(r.id,s.id,sizeof(r.id));strlcpy(r.units,s.units,sizeof(r.units));
+    for(unsigned j=0;j<4;++j)r.points[j]=s.engMin+(s.engMax-s.engMin)*j/3;
+    r.low=s.warnLow;r.high=s.warnHigh; // Limits are suggestions only; alarms stay disabled.
+  }
   DisplaySettings stored;
-  if (storageReady && preferences.getBytes("display",&stored,sizeof(stored))==sizeof(stored) &&
+  if (storageReady && preferences.getBytes("display-v2",&stored,sizeof(stored))==sizeof(stored) &&
       stored.magic==settings.magic && DashTelemetry::validRefresh(stored.refreshMs) &&
-      validSlot(stored.slots[0]) && validSlot(stored.slots[1])) settings=stored;
+      validSlot(stored.slots[0]) && validSlot(stored.slots[1]) && DashGauge::valid(stored.gauges)) settings=stored;
+  else if(storageReady){
+    struct Legacy {uint32_t magic,refreshMs;char slots[2][16];} old{};
+    if(preferences.getBytes("display",&old,sizeof(old))==sizeof(old) && old.magic==0x44534831 &&
+       DashTelemetry::validRefresh(old.refreshMs)&&validSlot(old.slots[0])&&validSlot(old.slots[1])){
+      settings.refreshMs=old.refreshMs;memcpy(settings.slots,old.slots,sizeof(old.slots));
+    }
+  }
   csrfToken=String(esp_random(),HEX)+String(esp_random(),HEX)+String(esp_random(),HEX)+String(esp_random(),HEX);
 
   beginWifi();

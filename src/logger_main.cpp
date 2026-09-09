@@ -4,16 +4,25 @@
 #include <SPI.h>
 #include <time.h>
 #include <Wire.h>
+#if defined(ESP8266)
+#include <ESP8266WiFi.h>
+#else
+#include <WiFi.h>
+#endif
 
 #include "AppConfig.h"
 #include "CsvLogger.h"
 #include "Dashboard.h"
+#include "DashLink.h"
+#include "BatteryMonitor.h"
 #include "LiveUpload.h"
 #include "Logic.h"
 #include "RuntimeSettings.h"
 #include "SensorChannel.h"
 #include "Timekeeper.h"
 #include "WebUi.h"
+#include "SystemLog.h"
+#include "RemoteLogs.h"
 
 namespace {
 
@@ -29,9 +38,12 @@ std::array<SensorChannel, AppConfig::kSensorCount> sensorChannels = [] {
 Timekeeper timekeeper;
 CsvLogger csvLogger;
 Dashboard dashboard;
+DashLink dashLink;
+BatteryMonitor batteryMonitor;
 WebUi webUi;
 LiveUpload liveUpload;
 RuntimeSettings runtimeSettings;
+RemoteLogs remoteLogs;
 
 bool adcReady = false;
 bool rtcReady = false;
@@ -103,6 +115,13 @@ void handleButton() {
 
 AppState buildState() {
   AppState state{};
+  state.system.batterySupported = batteryMonitor.supported();
+  state.system.batteryValid = batteryMonitor.valid();
+  state.system.batteryVoltage = batteryMonitor.voltage();
+  state.system.batteryPercent = batteryMonitor.percent();
+  state.system.externalPower = batteryMonitor.externalPower();
+  state.system.batteryTrend = batteryMonitor.trend();
+  state.system.batteryState = batteryMonitor.state();
   for (size_t index = 0; index < sensorChannels.size(); ++index) {
     state.sensors[index] = sensorChannels[index].snapshot();
   }
@@ -124,6 +143,9 @@ AppState buildState() {
   state.system.wifiReady = wifiReady;
   state.system.uploadEnabled = liveUpload.isEnabled();
   state.system.uploadConnected = liveUpload.isConnected();
+  state.system.dashEnabled = dashLink.isEnabled();
+  state.system.dashConnected = dashLink.isConnected();
+  state.system.dashStatus = dashLink.status();
   state.system.otaEnabled = AppConfig::kFeatures.otaUpdatesEnabled;
   state.system.otaReady = otaReady;
   state.system.wifiMode = webUi.modeString();
@@ -166,9 +188,10 @@ void beginOta() {
 
   ArduinoOTA.setHostname(AppConfig::kOta.hostname);
   ArduinoOTA.setPassword(AppConfig::kOta.password);
-  ArduinoOTA.onStart([]() { Serial.println("OTA update started"); });
-  ArduinoOTA.onEnd([]() { Serial.println("OTA update complete"); });
+  ArduinoOTA.onStart([]() { systemLog.add("ota_started"); Serial.println("OTA update started"); });
+  ArduinoOTA.onEnd([]() { systemLog.add("ota_complete"); Serial.println("OTA update complete"); });
   ArduinoOTA.onError([](ota_error_t error) {
+    systemLog.add("ota_failed",error,3);
     Serial.print("OTA error=");
     Serial.println(static_cast<unsigned int>(error));
   });
@@ -242,7 +265,7 @@ void setup() {
   while (!Serial && (millis() - serialWaitStartMs) < 5000) {
     delay(10);
   }
-  Serial.println("MDA logger boot");
+  Serial.println("Apexi Logger boot");
   Serial.flush();
 
   // A steady light confirms that the MCU has reached firmware setup.
@@ -304,6 +327,7 @@ void setup() {
   spiBus.begin();
 
   dashboard.begin();
+  dashLink.begin(AppConfig::kDashLink);
 
   adcReady = ads.begin(AppConfig::kAds1115Address, &Wire);
   if (adcReady) {
@@ -324,12 +348,48 @@ void setup() {
   Serial.println(adcReady ? "1" : "0");
 
   sampleSensors();
+  batteryMonitor.begin();
+  systemLog.begin(timekeeper,runtimeSettings.uploadConfig().deviceId);
+  remoteLogs.begin(runtimeSettings.uploadConfig());
   const AppState initialState = buildState();
   dashboard.render(initialState);
   webUi.publishState(initialState);
 }
 
 void loop() {
+  remoteLogs.loop(runtimeSettings.remoteManagementEnabled() && runtimeSettings.liveUploadEnabled());
+  systemLog.loop(timekeeper,csvLogger.isReady());
+  static uint32_t lastHealthMs=0;
+  static uint8_t health=255;
+  if(uint32_t(millis()-lastHealthMs)>=1000) {
+    lastHealthMs=millis();
+    const uint8_t next=(WiFi.status()==WL_CONNECTED?1:0) | (dashLink.isConnected()?2:0) |
+        (liveUpload.isConnected()?4:0) | (adcReady?8:0) | (rtcReady?16:0) |
+        (csvLogger.isReady() && csvLogger.lastError().isEmpty()?32:0);
+    const char *up[]={"wifi_connected","dash_connected","upstream_connected","adc_ready","rtc_ready","sd_ready"};
+    const char *down[]={"wifi_disconnected","dash_disconnected","upstream_disconnected","adc_fault","rtc_fault","sd_fault"};
+    for(unsigned bit=0;bit<6;++bit) if(health==255 || ((next^health)&(1<<bit)))
+      systemLog.add(next&(1<<bit)?up[bit]:down[bit],0,next&(1<<bit)?1:2);
+    health=next;
+    static int previousHttpStatus=0;
+    const int httpStatus=liveUpload.lastHttpStatus();
+    if(httpStatus!=previousHttpStatus) {
+      systemLog.add("upstream_http_status",uint32_t(httpStatus),httpStatus<0 || httpStatus>=400?2:1);
+      previousHttpStatus=httpStatus;
+    }
+    static bool previousTimeSync=false;
+    if(previousTimeSync!=rtcNetworkSynced) {
+      systemLog.add(rtcNetworkSynced?"time_synced":"time_sync_lost",0,rtcNetworkSynced?1:2);
+      previousTimeSync=rtcNetworkSynced;
+    }
+    static std::array<SensorFault,AppConfig::kSensorCount> faults{};
+    for(size_t i=0;i<sensorChannels.size();++i) {
+      const auto fault=sensorChannels[i].snapshot().activeFault;
+      if(faults[i]!=fault) { systemLog.add("sensor_state",(uint32_t(i)<<16)|uint32_t(fault),fault==SensorFault::None?1:2); faults[i]=fault; }
+    }
+  }
+  batteryMonitor.loop(millis());
+  dashLink.loop(millis());
   handleButton();
   webUi.handleClient();
   liveUpload.loop();
@@ -362,6 +422,10 @@ void loop() {
     sampleSensors();
     lastSampleMs = nowMs;
   }
+
+  std::array<SensorSnapshot, AppConfig::kSensorCount> dashSamples{};
+  for (size_t i = 0; i < sensorChannels.size(); ++i) dashSamples[i] = sensorChannels[i].snapshot();
+  dashLink.publish(dashSamples, nowMs);
 
   if ((nowMs - lastLogMs) >= AppConfig::kTiming.loggingIntervalMs) {
     AppState state = buildState();
@@ -403,6 +467,8 @@ void loop() {
     Serial.print(state.system.wifiReady ? 1 : 0);
     Serial.print(" ip=");
     Serial.print(state.system.ipAddress);
+    Serial.print(" dash=");
+    Serial.print(dashLink.status());
     for (const SensorSnapshot &sensor : state.sensors) {
       Serial.print(" | ");
       Serial.print(sensor.id);

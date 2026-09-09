@@ -25,6 +25,13 @@ struct SensorSnapshot {
 };
 
 struct SystemStatus {
+  bool batterySupported;
+  bool batteryValid;
+  float batteryVoltage;
+  int batteryPercent;
+  bool externalPower;
+  String batteryTrend;
+  String batteryState;
   bool adcReady;
   bool displayEnabled;
   bool rtcEnabled;
@@ -38,6 +45,9 @@ struct SystemStatus {
   bool wifiReady;
   bool uploadEnabled;
   bool uploadConnected;
+  bool dashEnabled;
+  bool dashConnected;
+  String dashStatus;
   bool otaEnabled;
   bool otaReady;
   String wifiMode;

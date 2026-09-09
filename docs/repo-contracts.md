@@ -6,9 +6,17 @@ This repo uses a small set of source-of-truth files for the important facts, and
 
 | Concern | Owning file(s) | Notes |
 | --- | --- | --- |
+| System events and remote files | `include/SystemEvents.h`, `src/SystemLog.cpp`, `src/RemoteLogs.cpp` | Versioned BLE records, bounded SD storage and outbound HTTPS file transfer; see `system-logs.md` |
 | PlatformIO environment and board target | [`platformio.ini`](../platformio.ini) | Canonical source for build env name, board ID, and build flags |
+| Apexi Logger entry point | [`src/logger_main.cpp`](../src/logger_main.cpp) | Sensor acquisition, logging, upstream upload, and Dash Link central |
+| Apexi Dash entry point | [`src/dash_main.cpp`](../src/dash_main.cpp) | Round LCD, dash web UI, and Dash Link peripheral |
+| Dash live LCD preview | [`include/DashLcdBitmap.h`](../include/DashLcdBitmap.h), [`include/DashWebUi.h`](../include/DashWebUi.h) | Indexed BMP encoding of the actual render buffer; changed-frame polling and stale/pause state |
+| Dash troubleshooting history | [`include/DashDiagnostics.h`](../include/DashDiagnostics.h), [`src/dash_main.cpp`](../src/dash_main.cpp) | Bounded RAM history and counters; system events are forwarded to Logger SD, not Dash flash |
+| Dash web UI and OTA upload helper | [`include/DashWebUi.h`](../include/DashWebUi.h), [`scripts/upload-dash-ota.py`](../scripts/upload-dash-ota.py) | Logger-matched status UI and authenticated application-only OTA upload |
+| Dash sensor transport and display configuration | [`include/DashTelemetry.h`](../include/DashTelemetry.h), [`src/DashLink.cpp`](../src/DashLink.cpp), [`src/dash_main.cpp`](../src/dash_main.cpp) | Bounded versioned BLE frames, freshness/fault handling, and authenticated NVS-backed display settings |
 | Pin map | [`include/PinDefinitions.h`](../include/PinDefinitions.h) | Canonical source for NodeMCU D-label/GPIO assignments |
-| Display wiring handoff | [`include/TFT_Setup.h`](../include/TFT_Setup.h) | Must consume the pin macros from `PinDefinitions.h` |
+| Legacy logger display wiring handoff | [`include/LoggerDisplayTFTSetup.h`](../include/LoggerDisplayTFTSetup.h) | Must consume the pin macros from `PinDefinitions.h`; its name intentionally avoids TFT_eSPI's auto-loaded `tft_setup.h` |
+| Separate dash BLE protocol and fixed Waveshare LCD wiring | [`include/DashLinkProtocol.h`](../include/DashLinkProtocol.h), [`include/WaveshareDashTFTSetup.h`](../include/WaveshareDashTFTSetup.h) | UUIDs and handshake must stay compatible across both firmware images |
 | Feature toggles, RTC selection, sensor config, MQTT/HTTPS upload and OTA config | [`include/AppConfig.h`](../include/AppConfig.h) | Canonical source for firmware configuration defaults |
 | Persistent device settings | [`include/RuntimeSettings.h`](../include/RuntimeSettings.h), [`src/RuntimeSettings.cpp`](../src/RuntimeSettings.cpp) | Checksummed flash-backed upstream endpoint, upload enable flag, NTP servers, and timezone settings |
 | Onboard store-and-forward | [`include/StoreForwardQueue.h`](../include/StoreForwardQueue.h), [`src/StoreForwardQueue.cpp`](../src/StoreForwardQueue.cpp), [`partitions/esp32-16mb-store-forward.csv`](../partitions/esp32-16mb-store-forward.csv) | ESP32 LittleFS queue format, rotation policy, capacity, and flash partition ownership |
@@ -49,8 +57,8 @@ This must run:
 ## Change Rules
 
 - If the board target changes, update [`platformio.ini`](../platformio.ini) first, then align the workflows.
-- If the pin map changes, update [`include/PinDefinitions.h`](../include/PinDefinitions.h) first, then align [`include/TFT_Setup.h`](../include/TFT_Setup.h) and [`docs/hardware-setup.md`](./hardware-setup.md).
-- If RTC, display, SD, live-upload, or OTA defaults change, update [`include/AppConfig.h`](../include/AppConfig.h) first, then align docs.
+- If the pin map changes, update [`include/PinDefinitions.h`](../include/PinDefinitions.h) first, then align [`include/LoggerDisplayTFTSetup.h`](../include/LoggerDisplayTFTSetup.h) and [`docs/hardware-setup.md`](./hardware-setup.md).
+- If RTC, display, dash-link, SD, live-upload, or OTA defaults change, update [`include/AppConfig.h`](../include/AppConfig.h) first, then align docs.
 - If the onboard queue capacity or record format changes, align `StoreForwardQueue`, the ESP32 partition table, local status fields, and recovery documentation together.
 - If live/status MQTT payload shape changes incompatibly, bump `Logic::kLivePayloadSchemaVersion`, keep version `1` compatibility documented, and align bridge/app tests before rollout.
 - Keep README concise. Detailed hardware descriptions belong in [`docs/hardware-setup.md`](./hardware-setup.md).

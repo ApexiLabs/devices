@@ -27,6 +27,8 @@ class WebUi {
 
  private:
   void registerRoutes();
+  void sendLogged(int status,const char *type,const String &body);
+  uint32_t requestStartedMs_=0;
   void handleIndex();
   void handleDiagnostics();
   void handleLiveJson();

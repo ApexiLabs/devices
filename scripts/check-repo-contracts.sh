@@ -27,12 +27,13 @@ for macro in MDA_PIN_SPI_MISO MDA_PIN_SPI_MOSI MDA_PIN_SPI_SCLK PIN_TFT_CS PIN_T
   grep -q "#define $macro" "$ROOT_DIR/include/PinDefinitions.h" || fail "missing $macro in include/PinDefinitions.h"
 done
 
-grep -q "#define TFT_MISO MDA_PIN_SPI_MISO" "$ROOT_DIR/include/TFT_Setup.h" || fail "TFT_Setup.h is not wired to MDA_PIN_SPI_MISO"
-grep -q "#define TFT_MOSI MDA_PIN_SPI_MOSI" "$ROOT_DIR/include/TFT_Setup.h" || fail "TFT_Setup.h is not wired to MDA_PIN_SPI_MOSI"
-grep -q "#define TFT_SCLK MDA_PIN_SPI_SCLK" "$ROOT_DIR/include/TFT_Setup.h" || fail "TFT_Setup.h is not wired to MDA_PIN_SPI_SCLK"
-grep -q "#define TFT_CS   PIN_TFT_CS" "$ROOT_DIR/include/TFT_Setup.h" || fail "TFT_Setup.h is not wired to PIN_TFT_CS"
-grep -q "#define TFT_DC   PIN_TFT_DC" "$ROOT_DIR/include/TFT_Setup.h" || fail "TFT_Setup.h is not wired to PIN_TFT_DC"
-grep -q "#define TFT_RST  PIN_TFT_RST" "$ROOT_DIR/include/TFT_Setup.h" || fail "TFT_Setup.h is not wired to PIN_TFT_RST"
+LOGGER_TFT_SETUP="$ROOT_DIR/include/LoggerDisplayTFTSetup.h"
+grep -q "#define TFT_MISO MDA_PIN_SPI_MISO" "$LOGGER_TFT_SETUP" || fail "LoggerDisplayTFTSetup.h is not wired to MDA_PIN_SPI_MISO"
+grep -q "#define TFT_MOSI MDA_PIN_SPI_MOSI" "$LOGGER_TFT_SETUP" || fail "LoggerDisplayTFTSetup.h is not wired to MDA_PIN_SPI_MOSI"
+grep -q "#define TFT_SCLK MDA_PIN_SPI_SCLK" "$LOGGER_TFT_SETUP" || fail "LoggerDisplayTFTSetup.h is not wired to MDA_PIN_SPI_SCLK"
+grep -q "#define TFT_CS   PIN_TFT_CS" "$LOGGER_TFT_SETUP" || fail "LoggerDisplayTFTSetup.h is not wired to PIN_TFT_CS"
+grep -q "#define TFT_DC   PIN_TFT_DC" "$LOGGER_TFT_SETUP" || fail "LoggerDisplayTFTSetup.h is not wired to PIN_TFT_DC"
+grep -q "#define TFT_RST  PIN_TFT_RST" "$LOGGER_TFT_SETUP" || fail "LoggerDisplayTFTSetup.h is not wired to PIN_TFT_RST"
 
 grep -q "docs/hardware-setup.md" "$ROOT_DIR/README.md" || fail "README.md does not point to docs/hardware-setup.md"
 grep -q "docs/repo-contracts.md" "$ROOT_DIR/AGENTS.md" || fail "AGENTS.md does not point to docs/repo-contracts.md"

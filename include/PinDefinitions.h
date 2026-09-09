@@ -2,7 +2,25 @@
 
 // Central pin definitions shared by the firmware and the TFT_eSPI setup.
 
-#if defined(ESP8266)
+#if defined(ARDUINO_TINYC6)
+// Unexpected Maker TinyC6. I2C and SPI follow the board variant defaults.
+#define PIN_I2C_SDA 6
+#define PIN_I2C_SCL 7
+
+#define MDA_PIN_SPI_MOSI 21
+#define MDA_PIN_SPI_MISO 20
+#define MDA_PIN_SPI_SCLK 19
+
+#define PIN_TFT_CS 18
+#define PIN_TFT_DC 8
+#define PIN_TFT_RST 9
+#define PIN_TFT_BL -1
+
+#define PIN_SD_CS 18  // Stacked UM RTC Logger Shield; GPIO10 is VBUS sense.
+
+#define PIN_UI_BUTTON 5
+#define PIN_STATUS_LED LED_BUILTIN
+#elif defined(ESP8266)
 // NodeMCU 1.0 / ESP-12E DevKit V2. GPIO numbers are used in code; the
 // matching NodeMCU D-labels are included for wiring.
 #define PIN_I2C_SDA 4   // D2

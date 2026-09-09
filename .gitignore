@@ -6,4 +6,5 @@
 .vscode/
 .build-tests/
 .omx/
+src/idf_component.yml
 include/AppSecrets.h

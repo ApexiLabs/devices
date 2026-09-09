@@ -1,7 +1,9 @@
 #pragma once
 
 #include <Arduino.h>
+#if !defined(MDA_HEADLESS_DISPLAY)
 #include <TFT_eSPI.h>
+#endif
 #include "AppConfig.h"
 #include "Types.h"
 
@@ -19,6 +21,7 @@ class Dashboard {
  Screen currentScreen() const;
 
  private:
+#if !defined(MDA_HEADLESS_DISPLAY)
   void drawMainScreen(const AppState &state);
   void drawDiagnosticsScreen(const AppState &state);
   uint8_t diagnosticsPageCount() const;
@@ -41,6 +44,7 @@ class Dashboard {
   uint16_t valueColor(const SensorSnapshot &sensor) const;
 
   TFT_eSPI tft_;
+#endif
   Screen screen_ = Screen::Main;
   uint8_t diagnosticsPage_ = 0;
   bool ready_ = false;

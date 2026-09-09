@@ -134,6 +134,12 @@ struct StoreForwardConfig {
   size_t maximumBytes;
 };
 
+struct DashLinkConfig {
+  bool enabled;
+  uint32_t retryIntervalMs;
+  uint32_t scanDurationSeconds;
+};
+
 struct RtcConfig {
   RtcKind kind;
   uint8_t address;
@@ -234,7 +240,7 @@ inline constexpr WifiConfig kWifi{
 inline constexpr FeatureConfig kFeatures{
     false,
     true,
-#if defined(ESP32)
+#if defined(ESP32) && !defined(ARDUINO_TINYC6)
     false,
 #else
     true,
@@ -264,7 +270,19 @@ inline constexpr UploadConfig kLiveUpload{
     APEXI_APP_DEVICE_TOKEN,
 };
 
+inline constexpr DashLinkConfig kDashLink{
 #if defined(ESP32)
+    true,
+#else
+    false,
+#endif
+    5000,
+    2,
+};
+
+#if defined(ARDUINO_TINYC6)
+inline constexpr StoreForwardConfig kStoreForward{true, 1UL * 1024UL * 1024UL};
+#elif defined(ESP32)
 inline constexpr StoreForwardConfig kStoreForward{true, 10UL * 1024UL * 1024UL};
 #else
 inline constexpr StoreForwardConfig kStoreForward{false, 0};

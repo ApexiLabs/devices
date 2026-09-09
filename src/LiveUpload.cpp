@@ -580,6 +580,8 @@ bool LiveUpload::replayQueuedSnapshot() {
   return false;
 }
 
+const char *LiveUpload::trustRoot() { return kIsrgRootX1; }
+
 bool LiveUpload::postHttps(const char *kind, const String &payload, String *responseBody) {
   lastHttpsAttemptMs_ = millis();
   HTTPClient http;

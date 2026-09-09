@@ -21,10 +21,10 @@ export PLATFORMIO_SETTING_ENABLE_TELEMETRY=no
 
 "$ROOT_DIR/.venv/bin/python" -m platformio run \
   --project-dir "$ROOT_DIR" \
-  --environment nodemcuv2
+  --environment logger-nodemcuv2
 
 exec "$ROOT_DIR/.venv/bin/python" \
   "$ROOT_DIR/.platformio/packages/framework-arduinoespressif8266/tools/espota.py" \
   --ip "$OTA_TARGET" \
   --auth "$OTA_PASSWORD" \
-  --file "$ROOT_DIR/.pio/build/nodemcuv2/firmware.bin"
+  --file "$ROOT_DIR/.pio/build/logger-nodemcuv2/firmware.bin"

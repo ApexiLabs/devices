@@ -18,6 +18,7 @@
 class LiveUpload {
  public:
   LiveUpload();
+  static const char *trustRoot();
 
   bool begin(const AppConfig::UploadConfig &config,
              bool enabled,
@@ -33,6 +34,7 @@ class LiveUpload {
   String sessionId() const;
   String lastError() const;
   uint32_t lastSequence() const;
+  int lastHttpStatus() const { return lastHttpStatus_; }
   bool storeForwardEnabled() const;
   bool storeForwardReady() const;
   uint32_t storeForwardPendingRecords() const;

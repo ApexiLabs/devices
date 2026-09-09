@@ -44,26 +44,32 @@ jobs:
         run: |
           PLATFORMIO_CORE_DIR="$PWD/.platformio" \
             PLATFORMIO_SETTING_ENABLE_TELEMETRY=no \
-            pio run -e nodemcuv2 -e esp32dev
+            pio run -e logger-nodemcuv2 -e logger-esp32 -e logger-tinyc6 -e dash-waveshare-s3-128
 
       - name: Prepare firmware artifacts
         run: |
           mkdir -p dist
-          cp .pio/build/nodemcuv2/firmware.bin dist/motorsport-data-acquisition-nodemcuv2-firmware.bin
-          cp .pio/build/nodemcuv2/firmware.elf dist/motorsport-data-acquisition-nodemcuv2-firmware.elf
-          cp .pio/build/esp32dev/firmware.bin dist/motorsport-data-acquisition-esp32dev-firmware.bin
-          cp .pio/build/esp32dev/firmware.elf dist/motorsport-data-acquisition-esp32dev-firmware.elf
+          cp .pio/build/logger-nodemcuv2/firmware.bin dist/apexi-logger-nodemcuv2-firmware.bin
+          cp .pio/build/logger-nodemcuv2/firmware.elf dist/apexi-logger-nodemcuv2-firmware.elf
+          cp .pio/build/logger-esp32/firmware.bin dist/apexi-logger-esp32-firmware.bin
+          cp .pio/build/logger-esp32/firmware.elf dist/apexi-logger-esp32-firmware.elf
+          cp .pio/build/logger-tinyc6/firmware.bin dist/apexi-logger-tinyc6-firmware.bin
+          cp .pio/build/logger-tinyc6/firmware.elf dist/apexi-logger-tinyc6-firmware.elf
+          cp .pio/build/logger-tinyc6/firmware.factory.bin dist/apexi-logger-tinyc6-factory.bin
+          cp .pio/build/dash-waveshare-s3-128/firmware.bin dist/apexi-dash-waveshare-s3-128-firmware.bin
+          cp .pio/build/dash-waveshare-s3-128/firmware.elf dist/apexi-dash-waveshare-s3-128-firmware.elf
+          cp .pio/build/dash-waveshare-s3-128/firmware.factory.bin dist/apexi-dash-waveshare-s3-128-factory.bin
           python .platformio/packages/tool-esptoolpy/esptool.py --chip esp32 merge_bin \
-            --output dist/motorsport-data-acquisition-esp32dev-factory.bin \
+            --output dist/apexi-logger-esp32-factory.bin \
             --flash_mode dio --flash_freq 40m --flash_size 16MB \
-            0x1000 .pio/build/esp32dev/bootloader.bin \
-            0x8000 .pio/build/esp32dev/partitions.bin \
+            0x1000 .pio/build/logger-esp32/bootloader.bin \
+            0x8000 .pio/build/logger-esp32/partitions.bin \
             0xe000 .platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
-            0x10000 .pio/build/esp32dev/firmware.bin
+            0x10000 .pio/build/logger-esp32/firmware.bin
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: firmware-nodemcuv2-and-esp32dev
+          name: firmware-logger-nodemcuv2-logger-esp32-logger-tinyc6-dash-waveshare-s3-128
           path: dist/*
           if-no-files-found: error

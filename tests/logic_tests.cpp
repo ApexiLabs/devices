@@ -4,6 +4,8 @@
 #include <string>
 
 #include "Logic.h"
+#include "DashLinkProtocol.h"
+#include "DashWifiPolicy.h"
 
 namespace {
 
@@ -90,6 +92,15 @@ void testIntervalTiming() {
               "interval timing survives millis wrap");
 }
 
+void testDashRetryTiming() {
+  expectEqual(DashLinkProtocol::retryDue(5000, 0, 5000), 1,
+              "dash retry is due at boundary");
+  expectEqual(DashLinkProtocol::retryDue(4999, 0, 5000), 0,
+              "dash retry is not due early");
+  expectEqual(DashLinkProtocol::retryDue(25, 0xFFFFFFF0U, 40), 1,
+              "dash retry timing survives millis wrap");
+}
+
 void testHttpRetryPolicy() {
   expectEqual(Logic::isRetryableHttpStatus(-1), 1, "retries transport failures");
   expectEqual(Logic::isRetryableHttpStatus(502), 1, "retries gateway failures");
@@ -150,11 +161,22 @@ void testUploadIdentifiers() {
 }  // namespace
 
 int main() {
+  expectEqual(DashWifiPolicy::shouldRetry(true, false, 29999, 0), 0,
+              "Wi-Fi attempt gets full connection interval");
+  expectEqual(DashWifiPolicy::shouldRetry(true, false, 30000, 0), 1,
+              "Wi-Fi retries at interval boundary");
+  expectEqual(DashWifiPolicy::shouldRetry(true, true, 30000, 0), 0,
+              "Wi-Fi does not interrupt a connected station");
+  expectEqual(DashWifiPolicy::shouldRetry(false, false, 30000, 0), 0,
+              "Wi-Fi does not attempt empty credentials");
+  expectEqual(DashWifiPolicy::shouldRetry(true, false, 29984, 0xfffffff0U), 1,
+              "Wi-Fi retry survives millis rollover");
   testCurrentConversion();
   testFaultThresholds();
   testEngineeringScaling();
   testFilter();
   testIntervalTiming();
+  testDashRetryTiming();
   testHttpRetryPolicy();
   testTimestampFormatting();
   testFileNameNormalization();

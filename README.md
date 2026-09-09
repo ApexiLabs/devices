@@ -1,10 +1,30 @@
-# Motorsport Data Acquisition
+# Apexi Logger and Apexi Dash
 
-Arduino/PlatformIO firmware for a configurable 4-20 mA motorsport logger and dashboard, targeting classic ESP32 DevKit/WROOM-class boards and the NodeMCU 1.0 / ESP-12E DevKit V2.
+The dashboard CSV list displays file sizes in decimal MB to two decimal places.
+
+System events are stored separately from sensor CSVs, with Dash forwarding,
+an authenticated local viewer, and optional ESP32 HTTPS remote downloads.
+See [System logs and remote downloads](docs/system-logs.md) for limits and setup.
+
+Both firmware components live in `motorsport-data-acquisition` and share **Dash Link**, the BLE connection protocol.
+
+| Component | PlatformIO target | Entry point |
+| --- | --- | --- |
+| Apexi Logger — TinyC6 | `logger-tinyc6` | `src/logger_main.cpp` |
+| Apexi Logger — classic ESP32 | `logger-esp32` | `src/logger_main.cpp` |
+| Apexi Logger — NodeMCU (legacy, no BLE) | `logger-nodemcuv2` | `src/logger_main.cpp` |
+| Apexi Dash — Waveshare S3 1.28-inch | `dash-waveshare-s3-128` | `src/dash_main.cpp` |
+
+These replace the previous `tinyc6`, `esp32dev`, `nodemcuv2`, and `waveshare_dash` environment names. The legacy OTA environment is now `logger-nodemcuv2-ota`. The default remains the NodeMCU logger; select the target explicitly for either ESP32 board.
+
+Release assets use `apexi-<target>-firmware.bin`, `apexi-<target>-firmware.elf`, and, for ESP32 targets, `apexi-<target>-factory.bin`. BLE discovery identifies the logger as `APEXI-LOGGER` and the dash as `APEXI-DASH`. Existing `mda-logger` upstream identity, OTA hostname, and `mda-logger/1` handshake remain compatible. The dash status API now calls its handshake state `loggerReady`.
+
+Arduino/PlatformIO firmware for a configurable 4-20 mA motorsport logger and its separate Waveshare ESP32-S3 round dash, targeting the Unexpected Maker TinyC6, classic ESP32 DevKit/WROOM-class boards, and the NodeMCU 1.0 / ESP-12E DevKit V2.
 
 ## Features
 - Reads a configurable set of 4-20 mA sensors through an ADS1115-based analog front end
-- Displays live gauges and diagnostics on a 480x320 SPI TFT
+- Connects ESP32-family loggers to a Waveshare ESP32-S3-Touch-LCD-1.28 dash over BLE, retrying every five seconds when the dash is unavailable
+- Builds separate `dash-waveshare-s3-128` firmware that shows the initial BLE connection state and serves its own commissioning web UI
 - Logs CSV data to microSD with RTC timestamps when RTC hardware is fitted
 - Serves a lightweight Wi-Fi dashboard and CSV download endpoints
 - Publishes live telemetry over MQTT or authenticated HTTPS when station Wi-Fi and upstream settings are configured
@@ -30,18 +50,47 @@ Primary source files:
 - [`include/AppConfig.h`](include/AppConfig.h)
 - [`include/PinDefinitions.h`](include/PinDefinitions.h)
 - [`include/LiveUpload.h`](include/LiveUpload.h)
-- [`src/main.cpp`](src/main.cpp)
+- [`src/logger_main.cpp`](src/logger_main.cpp)
 - [`src/LiveUpload.cpp`](src/LiveUpload.cpp)
+- [`src/DashLink.cpp`](src/DashLink.cpp)
+- [`src/dash_main.cpp`](src/dash_main.cpp)
 - [`docs/hardware-setup.md`](docs/hardware-setup.md)
 - [`docs/repo-contracts.md`](docs/repo-contracts.md)
 
 ## Build and flash
 1. Install PlatformIO Core or use the PlatformIO VS Code extension.
-2. Wire the NodeMCU or classic ESP32 DevKit using the matching GPIO table in [`docs/hardware-setup.md`](docs/hardware-setup.md), then review [`include/PinDefinitions.h`](include/PinDefinitions.h).
+2. Wire the NodeMCU, TinyC6, or classic ESP32 DevKit using the matching GPIO table in [`docs/hardware-setup.md`](docs/hardware-setup.md), then review [`include/PinDefinitions.h`](include/PinDefinitions.h).
 3. Review sensor ranges, timing values, live upload settings, and optional hardware toggles in [`include/AppConfig.h`](include/AppConfig.h). Copy `include/AppSecrets.example.h` to the ignored `include/AppSecrets.h` and set Wi-Fi plus MQTT or HTTPS credentials there.
 4. Run [`scripts/verify-repo.sh`](scripts/verify-repo.sh) `--fast` for host-side verification and contract checks, and `--full` when the local PlatformIO toolchain is available.
-5. Build and upload with `pio run -t upload --upload-port /dev/cu.usbserial-10`, replacing the port when needed.
+5. Build and upload the required environment with `pio run -e logger-tinyc6 -t upload --upload-port /dev/cu.usbmodem1101`, replacing the environment and port when needed.
 6. Open the serial monitor at 115200 baud with `pio device monitor`. If a CH340-based board stays in reset, open the port with DTR and RTS inactive or press the board's `RST` button once.
+
+### Waveshare dash firmware
+
+The small LCD prioritises one or two large readings. Hide either display slot for a single centred value; keep both active for two stacked values. Buffered rendering skips unchanged frames to avoid erase/redraw flicker. Sensor selection and refresh timing remain in the Dash web UI.
+
+The gauge-inspired black face uses cyan/gold perimeter accents and matching sensor labels, white measurements, and amber fault text. Accents identify slots; they are not measurement scales.
+
+The web UI pairs the native-size LCD preview with sensor readings in single-column cards on desktop, stacking them on mobile. Link status uses compact text; background polling leaves the manual refresh button visually stable.
+
+The preview keeps only its live capture status and controls; sensor timing is summarised as the configured refresh interval and frequency.
+
+Dash troubleshooting logging is enabled in RAM. Use **Dash Link → Download troubleshooting log** before reboot/OTA to save receive counters, sample gaps, and the latest 64 state transitions. See [diagnostic interpretation](docs/hardware-setup.md#dash-troubleshooting-log).
+
+LCD and web readings hold the last valid number in amber during stale data, disconnection, or sensor faults, with an explicit status label. Held numbers are never marked live; a sensor with no valid history still shows no value. History resets on Dash reboot.
+
+The **Live LCD** web card mirrors the actual 240×240 render buffer for remote layout checks. It downloads changed frames at most once per second, supports pause/resume and opening a snapshot, and marks retained images stale if Dash becomes unreachable. It shows rendered pixels, not a camera view of the physical panel.
+
+Dash joins the station network from the ignored `include/AppSecrets.h`, keeping its recovery AP available. Its LCD uses a black background, and its live web UI matches Logger's theme. Password-protected OTA uses `APEXI_OTA_PASSWORD`; after the first USB installation, build Dash and run `./.venv/bin/python scripts/upload-dash-ota.py <dash-ip>`. See [Dash commissioning and OTA](docs/hardware-setup.md#waveshare-esp32-s3-dash) for setup, status fields, and network requirements.
+
+Build and flash the separate dash image with:
+
+```sh
+pio run -e dash-waveshare-s3-128
+pio run -e dash-waveshare-s3-128 -t upload --upload-port /dev/cu.usbmodem1101
+```
+
+PlatformIO writes an update image to `.pio/build/dash-waveshare-s3-128/firmware.bin` and a combined first-flash image to `.pio/build/dash-waveshare-s3-128/firmware.factory.bin`. On boot, the dash advertises the Apexi BLE service and creates the password-protected `APEXI-DASH` Wi-Fi access point. Join it with password `apexi-dash` and open `http://192.168.4.1` for the initial connection-status page. The logger firmware scans at boot and, while disconnected, retries using `AppConfig::kDashLink.retryIntervalMs` (five seconds by default). Logger also publishes sensor readings over BLE. Use Dash’s password-protected `/settings` page to choose the two LCD readings and set their refresh interval (250–5000 ms). Choices survive reboot; missing or faulted sensors show unavailable values.
 
 ## Wi-Fi firmware updates
 
@@ -102,7 +151,7 @@ flowchart LR
     A["4-20 mA Sensors"] --> B["ESP32 / ESP8266 Firmware"]
     B --> C["ADS1115 Sampling"]
     C --> D["App State"]
-    D --> E["TFT Dashboard (Optional)"]
+    D --> E["Waveshare Dash over BLE"]
     D --> F["Web UI / Local API"]
     D --> G["CSV Logger (Optional SD)"]
     D --> H["MQTT / HTTPS Live Upload"]
@@ -162,8 +211,8 @@ Example live payload shape:
 ## Web endpoints
 The checked-in default is station mode. Create the ignored `include/AppSecrets.h` from the example and provide a 2.4 GHz SSID/password; `fast_connect`-style BSSID/channel pinning is not used, so the ESP8266 performs a normal network scan. If station association times out, firmware falls back to the open 2.4 GHz SoftAP `MDA-LOGGER` at `http://192.168.44.1` on channel 6. Set `AppConfig::kWifi.apPassword` to an 8+ character WPA2 key if a closed fallback AP is required.
 - `/` compact phone-friendly sensor dashboard with a basic fault summary
-- `/diagnostics` detailed connectivity, hardware, storage, transport, and sensor diagnostics
-- `/api/live` current readings and system state as JSON
+- `/diagnostics` detailed connectivity, hardware, storage, transport, and sensor diagnostics, including Apexi Dash Bluetooth connection and link status. The upstream endpoint row displays only the server hostname; settings and `upload_server` retain the full endpoint. TinyC6 builds enable CSV logging to the stacked RTC Logger Shield microSD card (CS GPIO18).
+- `/api/live` current readings and system state as JSON, including TinyC6 battery voltage, estimated 1S LiPo percentage, USB/5V presence and voltage trend. Battery diagnostics are estimates, not a fuel gauge or definitive charging/completion status; see [hardware setup](docs/hardware-setup.md).
 - `/api/files` available CSV files on the SD card
 - `/download/<file>` fetch a CSV log file
 

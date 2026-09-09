@@ -1,14 +1,24 @@
 # Hardware Setup
 
+Dashboard CSV file sizes use decimal megabytes (1 MB = 1,000,000 bytes), rounded
+to two decimal places. The file API continues to return exact byte counts.
+
+System logs share the existing microSD wiring and require no additional pins.
+Update both Logger and Dash firmware for Dash event forwarding; remote retrieval
+requires ESP32, HTTPS and management enabled locally and in the app. See
+[system-log storage, retention and acceptance](system-logs.md).
+
+Logger `/diagnostics` includes an Apexi Dash card with Bluetooth connected/disconnected/disabled state and the current discovery or connection status. The upstream endpoint display shows only the hostname (not the port or ingest path); this does not change the configured destination. `/api/live` adds `dash_enabled`, `dash_connected`, and `dash_status` for the local UI.
+
 ## Core modules
-- MCU: NodeMCU 1.0 / ESP-12E DevKit V2 (`nodemcuv2`) or classic ESP32 DevKit / ESP32-WROOM-32 (`esp32dev`)
+- MCU: NodeMCU 1.0 / ESP-12E DevKit V2 (`logger-nodemcuv2`), classic ESP32 DevKit / ESP32-WROOM-32 (`logger-esp32`), or Unexpected Maker TinyC6 (`logger-tinyc6`)
 - ADC: ADS1115 on I2C, using the Adafruit ADA1085 board
 - Sensor interface: 2x DFRobot SEN0262 current-to-voltage modules
 - Power: DFRobot DFR1015 buck converter for the regulated rail
 - UI button: DFRobot DFR0029-W digital push button
 - RTC: RV-3028-C7 on the Unexpected Maker RTC Logger Shield, sharing the primary I2C bus with the ADS1115
 - Storage: microSD slot on the Unexpected Maker RTC Logger Shield, using FAT32 media
-- Optional display: 480x320 SPI TFT using ST7796S
+- Dash: Waveshare ESP32-S3-Touch-LCD-1.28, running its own `dash-waveshare-s3-128` firmware
 
 ## Recommended wiring
 
@@ -107,11 +117,153 @@ The sensor receiver boards still connect to ADS1115 A0 and A1 rather than to an 
 
 The detected ESP32 target has 16 MB flash. Its firmware reserves dual 2 MB OTA slots and an approximately 12 MB LittleFS partition, of which at most 10 MB is used for the circular HTTPS store-and-forward queue. This makes microSD optional for transient outage recovery, and SD logging is disabled by default for the ESP32 target. Fit microSD and enable the feature only when long-duration CSV archives or removable media are required; the onboard queue is not exposed as a user filesystem and automatically acknowledges replayed records.
 
+The current `logger-esp32` environment is headless and uses the separate BLE dash. This removes the legacy TFT driver from the logger image. The legacy directly wired TFT remains available only to older configurations that deliberately restore its build dependency and remove `MDA_HEADLESS_DISPLAY`.
+
+Do not flash the current classic ESP32 image without checking its final binary size: the 2026-09-08 local build produced a 2,097,264-byte `firmware.bin`, exceeding its 2,097,152-byte OTA slot by 112 bytes even though PlatformIO's ELF size check passed. This target needs an image-size reduction or a separately planned partition migration before flashing. The TinyC6 and Waveshare Dash targets use different partition layouts and are not affected by this limit.
+
+## TinyC6 pin map
+
+Battery diagnostics: a conventional single-cell 4.2V LiPo on the stacked shield/VBAT is monitored through GPIO4. The [TinyC6 P1 schematic](https://github.com/UnexpectedMaker/esp32c6/blob/main/TinyC6/TinyC6_Schematic_P1.pdf) specifies R6=442k and R7=160k (3.7625 multiplier). GPIO10 detects USB/5V power. Eight calibrated ADC samples are averaged once per second and smoothed. The resting-voltage percentage is approximate, affected by charging, load, temperature and chemistry. Readings outside 2.5–4.35V are unavailable. A disconnected battery can still produce a plausible charger voltage; this is not a battery-presence detector.
+
+The two-minute trend has a 30mV deadband and resets on power changes or sample gaps over 15 seconds. External power plus rising voltage means "likely charging"; no external power means "discharging (inferred)" under normal board wiring. Stable voltage on external power means unknown charge state, never confirmed charge completion. No current or charger-status sensor is read. Diagnostics and additive `battery_*` / `external_power` API fields expose the readings; unsupported boards report unavailable. CSV and BLE sensor contracts are unchanged.
+
+Battery bench verification (2026-09-08): application-only OTA to `10.0.40.177` succeeded. At uptime 2m27s the API reported 4.084V, estimated 85%, external power present, and a steady trend with unknown charge state; SD and Dash remained ready. The diagnostics UI was checked live. Voltage has not been compared against a multimeter and USB-removal/discharge behaviour has not been physically tested. Host tests cover the estimate curve, invalid readings, trend transitions, power changes and timer rollover.
+
+SD bench verification (2026-09-08, Logger `10.0.40.177`): after application-only OTA with SD enabled and CS corrected to GPIO18, the stacked shield mounted successfully. `/logs-20260908.csv` grew from 6,237 to 22,158 bytes; HTTP readback returned 361 data rows with consistent eight-column headers/rows and valid pressure/temperature samples. ADC, RTC and Dash link reported ready. This verifies live write/readback, not power-loss durability; upstream HTTP 401 and unavailable onboard queue remain separate faults.
+
+The `logger-tinyc6` environment uses the Unexpected Maker board definition and native USB CDC/JTAG. Its default assignments are:
+
+| Function | TinyC6 GPIO | Default use |
+| --- | --- | --- |
+| I2C SDA | GPIO 6 | ADS1115 SDA + RTC SDA |
+| I2C SCL | GPIO 7 | ADS1115 SCL + RTC SCL |
+| SPI MOSI | GPIO 21 | Optional TFT + microSD MOSI |
+| SPI MISO | GPIO 20 | Optional TFT + microSD MISO |
+| SPI SCLK | GPIO 19 | Optional TFT + microSD SCLK |
+| microSD CS | GPIO 18 | Stacked RTC Logger Shield; enabled for TinyC6 |
+| TFT CS | GPIO 18 | Optional TFT chip select |
+| TFT DC | GPIO 8 | Optional TFT data/command |
+| TFT RST | GPIO 9 | Optional TFT reset |
+| UI button | GPIO 5 | Optional active-low button |
+| Status LED | Board RGB LED | Firmware-running indication |
+
+The TinyC6 has 8 MB flash and no PSRAM. Its default OTA partition table leaves a 1.5 MB LittleFS partition; after the firmware's filesystem reserve, approximately 1 MB is available to the circular store-and-forward queue. TinyC6 SD logging is enabled for the directly stacked RTC Logger Shield, using GPIO18 for CS and the default SPI pins above. GPIO10 is VBUS sense, not SD CS. The optional legacy TFT CS also uses GPIO18, so do not enable that display alongside this shield without remapping it. Classic ESP32 SD logging remains disabled by default. Native USB serial requires the `ARDUINO_USB_MODE=1` and `ARDUINO_USB_CDC_ON_BOOT=1` build flags already present in the `logger-tinyc6` environment.
+
+The `logger-tinyc6` environment is currently headless. TFT_eSPI 2.5.x does not support the ESP32-C6 register interface, so this target omits the optional local TFT dashboard while retaining the web dashboard, sensor acquisition, local store-and-forward logging, live upload, and OTA services. The TFT pins above are reserved for a future C6-compatible display driver.
+
+## Waveshare ESP32-S3 dash
+
+The dash is a separate computer, not an SPI peripheral wired to the logger. It uses the onboard 1.28-inch, 240x240 GC9A01A display and connects wirelessly to ESP32-family logger firmware over BLE. The logger is the BLE central; the dash advertises as the peripheral. This keeps connection recovery under the logger's control and leaves the dash Wi-Fi radio available for its own web UI.
+
+At logger boot it scans immediately, connects to the advertised Apexi dash service, and writes `mda-logger/1`. If discovery, connection, service lookup, or handshake fails, another attempt starts after `AppConfig::kDashLink.retryIntervalMs` (5 seconds by default). The scan window is 2 seconds. ESP8266 builds remain supported but cannot use this link because the hardware has no BLE radio.
+
+After the handshake, Logger writes version-1 telemetry to the additive characteristic `8f771002-6d7a-4f48-9f8a-67a8c14b6c01`. `include/DashTelemetry.h` owns its 20-byte wire format, catalog decoding, and freshness rules. Repeated ID/name/units/sample frames fit the default BLE MTU; metadata is repeated so a dropped frame can recover. The supported catalog contains up to eight sensors. Stable IDs must fit 15 ASCII characters; display names and units are shortened to 15 characters. Logger targets one complete cycle every 250 ms, but actual delivery is limited by its loop, BLE scheduling, and other work. Frames carry filtered values, validity, active faults, and threshold warnings. A handshake-only peer stays compatible but cannot supply readings.
+
+The LCD has two configurable slots, automatic first/second sensor selection by default. Open `/settings` on Dash and authenticate as `admin` with the OTA password to choose either sensor, hide a slot, or select automatic mode. Select a refresh interval from 250 to 5000 ms in 250 ms steps (default 1000 ms). This controls LCD redraw and web polling, not Logger acquisition or telemetry production. The interval and effective requested frequency are shown on the status page. Settings are stored in Dash NVS; saved IDs remain selected if a sensor disappears instead of silently switching to another measurement.
+
+For one large centred reading, set either slot to **Hidden**. With both slots active, readings are stacked using 48-pixel digits. Single-reading mode uses up to 96-pixel digits, shrinking longer values to fit. Labels, units, and fault explanations use smaller text; device branding, IP address, and refresh timing are omitted from the sensor screen to preserve space. Both layouts keep the black background. `include/DashDisplayLayout.h` owns their geometry.
+
+The LCD is rendered into a single 240×240, 8-bit off-screen sprite (about 57.6 KB) before transfer. The live panel is not cleared during periodic redraws, and identical visible frames are not transferred at all. `lcdBuffered` and `lcdFrameCount` in `/api/status` expose buffer allocation and actual frame pushes; `lcdValuesShown` reports the configured active slot count. If allocation fails, the panel shows a static error while Wi-Fi/OTA remain available. The refresh setting is an upper update cadence, not a requirement to rewrite unchanged pixels. This avoids erase/redraw flashing; it is not hardware tear-synchronised scanout.
+
+Buffered-layout verification (2026-09-08): Dash OTA succeeded, `lcdBuffered` was true, and its frame counter remained 5 across three 1.1-second observation windows with unchanged readings at a 500 ms refresh interval. Both first-slot-only and second-slot-only configurations reported one active reading; the original two-sensor selection and 500 ms setting were restored. Host layout checks verify the single-value centre/scale and non-overlapping two-value geometry. Physical flicker and glyph appearance still require visual confirmation on the device.
+
+Settings writes use authenticated `POST /api/settings`, a per-boot CSRF token from authenticated `GET /api/settings`, validation, and checked NVS persistence. Empty OTA passwords disable settings writes. The live status endpoint adds `refreshMs`, `slots`, `settingsWritable`, `telemetryIntervalMs`, and `sensors` (ID/name/units/value/fresh/valid/fault/warning). Data older than three seconds or from a disconnected Logger is unavailable; invalid/faulted values are JSON `null` and LCD `--`, not misleading zero readings. With no ADC on the bench, expect `adc_unavailable` rather than numeric measurements.
+
+Sensor-display verification (2026-09-08): both Dash and the TinyC6 Logger at `10.0.40.177` were application-only OTA updated. Dash received `oil_pressure` / `bar` and `oil_temperature` / `C` with fresh frames and the expected `adc_unavailable` faults. Numeric decoding/rendering, malformed frames, stale data, timer rollover, and refresh limits passed host tests; real numeric sensor readings remain unverified because the bench ADC is absent. Unauthenticated settings returned 401; invalid CSRF tokens, intervals, and IDs returned 400. Explicit Oil Pressure / Oil Temp selections and 500 ms refresh survived a second Dash OTA/reboot, and telemetry resumed after reconnection. Desktop and 390-pixel web layouts were checked. The LCD's physical appearance was not camera-verified.
+
+The onboard display wiring is fixed by the Waveshare PCB and is encoded in [`include/WaveshareDashTFTSetup.h`](../include/WaveshareDashTFTSetup.h):
+
+The setup explicitly selects `USE_FSPI_PORT` for TFT_eSPI 2.5.x with Arduino ESP32 3.x. Without it, the S3 driver uses the Arduino FSPI identifier as a hardware register index and crashes during LCD initialization. Dash diagnostics use UART0 (`Serial0`) through the board's USB serial adapter at 115200 baud, not native USB CDC.
+
+| Function | ESP32-S3 GPIO |
+| --- | --- |
+| LCD backlight | GPIO 2 |
+| LCD DC | GPIO 8 |
+| LCD CS | GPIO 9 |
+| LCD clock | GPIO 10 |
+| LCD MOSI | GPIO 11 |
+| LCD MISO | GPIO 12 |
+| LCD reset | GPIO 14 |
+| Touch interrupt | GPIO 5 |
+| Touch SDA / SCL | GPIO 6 / GPIO 7 |
+| Touch reset | GPIO 13 |
+
+Touch and the onboard IMU are intentionally not enabled in this first connection milestone. The dash creates a WPA2 access point named `APEXI-DASH` with password `apexi-dash`; its status page and JSON endpoint are available at `http://192.168.4.1/` and `/api/status`. This is a commissioning surface, not yet a complete settings UI.
+
+Dash also joins the station network configured by `APEXI_WIFI_STATION_SSID` and `APEXI_WIFI_STATION_PASSWORD` in the ignored `include/AppSecrets.h`, using the same credentials as Logger. It requests DHCP with hostname `apexi-dash`, starts connecting without blocking the BLE/UI loop, and retries every 30 seconds while disconnected. The retry policy lives in `include/DashWifiPolicy.h`. Empty station credentials leave only the recovery AP active. Never commit credentials or distribute locally built credential-bearing images publicly.
+
+Test Dash on the IoT network before changing or flashing Logger:
+
+1. Connect the Waveshare board over USB and verify the selected serial port belongs to it before uploading.
+2. Build and upload Dash using the commands below, then monitor serial at 115200 baud. Look for `DASH_WIFI=connected` and `DASH_STATION_WEB=http://<DHCP address>`. The LCD footer also shows the station IP.
+3. From a client permitted to access the IoT network, request `http://<DHCP address>/api/status`. Confirm `device` is `APEXI-DASH`, `wifiConnected` is `true`, and `stationIp` matches the DHCP address. `apIp` separately identifies the recovery AP. A successful build alone is not a network test.
+4. Power-cycle Dash and repeat the check. If association succeeds but HTTP cannot be reached, check IoT client isolation and firewall rules before attempting OTA.
+
+BLE `CONNECTED OK` in the web UI remains a Logger handshake indicator, not a Wi-Fi or sensor-health indicator. After connection, the LCD shows the chosen readings on a black background. The web page uses Logger's theme and polls at the configured interval; unavailable readings are cleared when requests fail.
+
+Dash supports password-protected ArduinoOTA with hostname `apexi-dash` and port 3232. It uses `APEXI_OTA_PASSWORD` from the ignored secrets header, remains disabled when that password is empty, and starts when station Wi-Fi connects. Status exposes `otaEnabled`, `otaReady`, `build`, and `uptimeSeconds`, never the password. The LCD shows an update notice on a black background during transfer. Install the first OTA-capable image over USB, then build the Dash target and run:
+
+```sh
+./.venv/bin/python scripts/upload-dash-ota.py 10.0.40.183
+```
+
+Use the current station IP if DHCP changes it. The helper sends only the prebuilt application image, checks it fits the generated OTA slots, checks the target identifies as an OTA-ready Dash, and reads the password without placing it in the process command line. This helper is for Dash devices commissioned with this repo's partition layout; do not use it for partition migration. Do not run concurrent PlatformIO builds against the same build directory, since other environments' artifacts may be cleaned. OTA is password authenticated, not an encrypted firmware transport; use only a trusted network. The host must allow the device's TCP callback for the transfer. There is no unauthenticated browser upload endpoint.
+
+Hardware verification (2026-09-08): flashed the Waveshare Dash over USB with hash verification, reset it, and observed `Apexi Dash ready` followed by `DASH_WIFI=connected`. A request from the local Mac to its DHCP address returned `device: APEXI-DASH`, `wifiConnected: true`, and both BLE state fields false (Logger was not connected). The observed station address was `10.0.40.183`; DHCP may change it. Logger firmware and OTA were not changed or tested in this step.
+
+Subsequent OTA/UI verification on the same date: installed the OTA-capable image over USB, then successfully uploaded the 1,291,840-byte application over Wi-Fi using PBKDF2-HMAC-SHA256 authentication. After reboot, `/api/status` reported Wi-Fi and OTA ready, and both `bleConnected` and `loggerReady` true with the separately updated Logger. The Logger-themed web page refreshed live status successfully; desktop and 390-pixel layouts were inspected with no horizontal overflow at phone width. The LCD renderer now uses `TFT_BLACK` for normal and update screens; its physical appearance was not camera-verified.
+
+Build and upload the dash independently:
+
+```sh
+pio run -e dash-waveshare-s3-128
+pio run -e dash-waveshare-s3-128 -t upload --upload-port /dev/cu.usbmodem1101
+```
+
+The generated dash update image is `.pio/build/dash-waveshare-s3-128/firmware.bin`; the combined bootloader, partition-table, and application image for a first flash is `.pio/build/dash-waveshare-s3-128/firmware.factory.bin`. Keep both boards powered during commissioning. A successful handshake changes the round LCD from `WAITING` to its sensor view; unplugging or resetting the logger returns it to `WAITING` and restarts BLE advertising.
+
+This commissioning milestone does not enable BLE bonding or application-layer authentication. Do not treat the handshake as a trusted vehicle-control channel. Add pairing, authorization, and command validation before the dash can change logger settings or receive sensitive data.
+
+### Dash troubleshooting log
+
+Logging is always enabled on Dash without flash writes. `GET /api/diagnostics` (also linked under Dash Link in the web UI) returns a bounded JSON snapshot: boot ID, uptime, received/accepted/rejected BLE writes, connection/disconnection counts, per-index sample counts, current sample ages, maximum inter-sample gaps, metadata masks and faults, free heap, Wi-Fi RSSI, maximum main-loop/web-handler duration, and the latest 64 observed sensor-state transitions. Transitions also appear on UART0 at 115200 baud as `DASH_DIAG`. Counters and history reset at reboot/OTA; save the download first. Indices refer to the current sensor catalog, not permanent IDs. Maximum gaps include disconnections. Events are observed by the main loop, so transitions entirely within a blocked loop may be missed; callback receive counters continue independently.
+
+- `stale` with sample gaps at least 3000 ms indicates missing timely BLE sample writes at Dash, not necessarily a failed physical sensor. Logger scheduling, transmission and radio delivery remain possible causes.
+- Increasing disconnect counts indicate BLE link interruption. Rejected writes indicate bad-length/protocol/pre-handshake traffic.
+- `sensor_fault` with small sample ages means Logger is delivering readings marked invalid or faulted.
+- Large web/loop maxima suggest Dash servicing delays. Compare behaviour with Live LCD paused to investigate preview overhead; maxima are lifetime values, not exact event correlations.
+- `renderClockRaces` counts a received timestamp newer than the time captured at the start of LCD rendering. This can produce an unsigned-age false stale indication; the counter measures the suspected race without changing freshness behaviour.
+
+This endpoint has the same read-only trusted-LAN boundary as status and does not expose credentials. It does not prove whether a missing packet was delayed at Logger or lost on the radio; correlated Logger sender logs are needed for that distinction. No Logger firmware or stale timeout is changed by this instrumentation.
+
+Initial bench capture (2026-09-08, boot `c298bbe78eb8355`, uptime 96,993 ms): 401 accepted writes, zero rejects/disconnects, per-sensor maximum sample gaps 3,400/3,301 ms, and repeated stale→live transitions recovering 50–400 ms after expiry. Maximum Dash loop/web durations were 28/7 ms and render-clock-race count zero. This demonstrates incoming sample gaps, not a proven Logger or radio root cause. Logger upload/SD work was being investigated separately.
+
+The LCD and web UI retain the last finite, valid, fault-free reading during stale data, faults, and BLE disconnection. Held readings are amber and explicitly labelled; never-valid readings remain `--`/unavailable. The API keeps `value:null` and `valid:false` when unavailable and provides separate `lastGoodValue`, `lastGoodAgeMs`, and `displayState` fields. Reconnection retains the catalog for display but invalidates received/valid flags until new packets arrive. Sensor ID changes, catalog-size changes, and Dash reboot clear affected history. Browser network failures also mark retained readings as held/offline. Last-good data stays in RAM and is not recorded as a new sensor sample.
+
+Held-value verification (2026-09-08): Dash build, host tests, and OTA passed; Logger reconnected with the saved two slots/500 ms cadence. A live stale event reported Oil Temp `lastGoodValue:22.61716652`, age 3023 ms, `displayState:Stale`, `valid:false`, and `value:null`. Automated UI checks cover amber held-state text and browser-offline retention. Physical LCD/interactive browser appearance for this change was not visually rechecked.
+
+### Remote LCD preview
+
+The status page omits the explanatory preview paragraph, labels the configured timing simply as `Refresh: <interval> (<frequency>)`, and leaves 12 pixels below the capture status before the preview controls. The technical preview and telemetry behaviour described here is unchanged.
+
+The Live LCD card occupies one desktop grid column beside Sensor readings (both stack on small screens). The image stays 240 pixels wide, shrinking only if necessary. Link-summary text is compact, and automatic status polling no longer toggles the Refresh status button's disabled appearance; only a manually initiated request does. Held sensor text wraps within the narrower card.
+
+Compact-card verification (2026-09-08): host checks and Dash build passed. OTA emitted an unexpected-response warning, but the rebooted device served the new 20:39:39 build. Browser inspection confirmed two adjacent 405-pixel cards, 16-pixel link-summary text, enabled refresh button during polling, and no horizontal overflow at the inspected desktop width. Regression tests distinguish automatic polling from manual-button busy feedback.
+
+Gauge styling keeps the reference's black face, coloured perimeter accents, and dominant numerals while retaining one/two-reading layouts. Slot one is cyan; slot two is warm gold, including when shown alone. Fixed arcs identify slots and do not imply a measurement range (range metadata is not transported). Warning/fault values and details are amber with explicit text. Labels and details are ellipsised to 120 and 116 pixels; values adapt font size within 180 pixels (single) or 160 pixels (dual) to clear the perimeter. Rendering remains buffered and skips unchanged frames. Host checks cover circular caption bounds; the actual dual-reading device bitmap was visually inspected after OTA on 2026-09-08. Numeric bench readings remain unavailable without the ADC.
+
+The Dash web UI's **Live LCD** card displays the actual 240×240 RGB332 sprite sent to the panel, clipped to its round shape. It fetches only changed frames, at most once per second while the page is visible, using the configured web polling interval. Pause/resume retains the last image; lost connectivity marks it stale. This supports remote layout development, but cannot prove physical panel wiring, brightness, tearing, or flicker.
+
+Read-only `GET /api/lcd.bmp` serves a 58,678-byte, top-down indexed BMP directly from the existing sprite without allocating a second frame buffer. The endpoint shares the status page's LAN access boundary; do not expose it publicly. `X-LCD-Boot`, `X-LCD-Frame`, and `ETag` identify the captured frame. Matching `If-None-Match` returns 304; image transfers are globally limited to one per second (429 with `Retry-After: 1`), and unavailable buffers return 503. `/api/status` includes `lcdBootId` so a reboot invalidates a cached frame even if the counter repeats. The synchronous web handler and renderer run on the same loop, keeping each capture consistent. OTA temporarily interrupts web serving; the preview is not an OTA progress stream.
+
+Preview verification (2026-09-08): Dash build and OTA passed; after reboot Wi-Fi, OTA, and Logger handshake were ready, with the original two slots and 500 ms refresh retained. The live bitmap returned HTTP 200, the expected 58,678 bytes and 240×240 top-down dimensions; conditional requests returned 304 and immediate repeat transfers returned 429. The decoded device image was visually checked: black background, two labels, amber `--`, and sensor-fault details (the bench ADC is absent). Host tests cover BMP headers/palette and preview change detection, rate cap, pause/resume, hidden tabs, and failed requests. Browser card visual verification was blocked by the locked workstation; physical panel behaviour remains unverified.
+
 ## Core BOM
 
 | Qty | Item | Purpose | Notes |
 | --- | --- | --- | --- |
 | 1 | NodeMCU 1.0 / ESP-12E DevKit V2 | Main controller | Supported default target; PlatformIO board ID `nodemcuv2` |
+| 1 | Waveshare ESP32-S3-Touch-LCD-1.28 | Separate round dash | PlatformIO environment `dash-waveshare-s3-128`; onboard GC9A01A LCD |
 | 2 | [Gravity Analog Current to Voltage Converter (DFRobot SEN0262)](https://core-electronics.com.au/gravity-analog-current-to-voltage-converter-for-4-20ma-application.html) | Converts each loop signal into a board-friendly voltage | One module per sensor channel |
 | 1 | [ADS1115 16-bit ADC breakout (Adafruit ADA1085)](https://core-electronics.com.au/ads1115-16-bit-adc-4-channel-with-programmable-gain-amplifier.html) | Reads the module voltage outputs | ADS1115 board for the receiver outputs |
 | 1 | [Digital Push Button, white (DFRobot DFR0029-W)](https://core-electronics.com.au/digital-push-button-white.html) | UI mode toggle and latched fault clear | Connect to the configured button input |
@@ -124,7 +276,7 @@ The detected ESP32 target has 16 MB flash. Its firmware reserves dual 2 MB OTA s
 
 | Qty | Item | Purpose | Notes |
 | --- | --- | --- | --- |
-| 1 | [3.5 inch 480x320 SPI TFT with ST7796S controller](https://core-electronics.com.au/catalog/product/view/sku/WS-15811) | Local dashboard display | Optional; if fitted, leave `displayEnabled` on in [`include/AppConfig.h`](../include/AppConfig.h) |
+| 1 | [3.5 inch 480x320 SPI TFT with ST7796S controller](https://core-electronics.com.au/catalog/product/view/sku/WS-15811) | Legacy directly wired local display | Optional for older builds; the separate Waveshare dash is the current direction |
 | 1 | Unexpected Maker RTC Logger Shield with RV-3028-C7 | Timestamps without network time | Enabled; shield GPIO 8/SDA connects to D2 and GPIO 9/SCL connects to D1 |
 | 1 | FAT32 microSD card in the Unexpected Maker RTC Logger Shield | Durable local CSV storage | Enabled; shield pins 36/37/35/34 map to D5/D6/D7/D0 respectively |
 | 1 | [24 V boost regulator for loop-powered sensors (Pololu U3V9F24, item 5588)](https://core-electronics.com.au/catalog/product/view/sku/POLOLU-5588) | Generates a dedicated 24 V sensor supply from the 12 V system rail | Optional; use only when a transmitter needs 24 V loop power and place it after the [Pololu 5380 reverse-voltage protector](https://core-electronics.com.au/pololu-reverse-voltage-protector-4-60v-10a.html) |
@@ -134,6 +286,7 @@ Recommended example module:
 
 Optional hardware toggles:
 - Set `AppConfig::kFeatures.displayEnabled` to `false` when no TFT is fitted.
+- Set `AppConfig::kDashLink.enabled` to `false` when an ESP32-family logger should not search for the separate dash.
 - Set `AppConfig::kFeatures.rtcEnabled` to `false` when no RTC hardware is fitted.
 - Set `AppConfig::kFeatures.sdLoggingEnabled` to `false` when no SD hardware is fitted.
 
@@ -161,7 +314,7 @@ When using receiver modules:
 ## Commissioning checklist
 1. Confirm the sensor supply voltage and compliance requirement from the actual transmitter datasheets.
 2. Verify the receiver module output voltage at 4 mA and 20 mA before connecting it to the ADS1115.
-3. Confirm the TFT controller is ST7796S. If it is ILI9488 or another controller, update [`include/TFT_Setup.h`](../include/TFT_Setup.h).
+3. Confirm the legacy directly wired TFT controller is ST7796S. If it is ILI9488 or another controller, update [`include/LoggerDisplayTFTSetup.h`](../include/LoggerDisplayTFTSetup.h).
 4. Set the RTC to the correct time before field logging.
 5. Inject 4, 8, 12, 16, and 20 mA into each channel and verify the receiver modules and displayed engineering units match the configured ranges.
 6. Confirm the serial boot report shows `wifiReady=1`, station mode, and a DHCP address before installing the logger in the vehicle.

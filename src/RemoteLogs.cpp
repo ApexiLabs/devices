@@ -1,4 +1,7 @@
 #include "RemoteLogs.h"
+#include "HttpsSlot.h"
+#include "HttpsWorker.h"
+#include <memory>
 #if defined(ESP32) && !defined(MDA_WAVESHARE_DASH)
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -12,43 +15,25 @@ void RemoteLogs::begin(const AppConfig::UploadConfig &config) {
   accessId_=config.cloudflareAccessClientId; accessSecret_=config.cloudflareAccessClientSecret; token_=config.appDeviceToken;
   config_.mqttHost=host_.c_str(); config_.httpsPath=path_.c_str(); config_.deviceId=identity_.c_str();
   config_.cloudflareAccessClientId=accessId_.c_str(); config_.cloudflareAccessClientSecret=accessSecret_.c_str(); config_.appDeviceToken=token_.c_str();
-  if(config.protocol!=AppConfig::UploadConfig::Protocol::Https) return;
-  if(xTaskCreate(worker,"remote-logs",8192,this,1,&task_)!=pdPASS) task_=nullptr;
-}
-void RemoteLogs::worker(void *context) {
-  auto &self=*static_cast<RemoteLogs *>(context);
-  for(;;) {
-    ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
-    WiFiClientSecure client; client.setCACert(LiveUpload::trustRoot());
-    HTTPClient http; http.setTimeout(3000); http.setConnectTimeout(3000);
-    http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    http.setUserAgent("ApexiLabs-Logger/1.0");
-    const auto &c=self.config_;
-    String url="https://"+String(c.mqttHost)+":"+String(c.mqttPort)+String(c.httpsPath)+"/logs";
-    self.success_=false; self.response_="";
-    if(http.begin(client,url)) {
-      http.addHeader("Content-Type","application/json");
-      http.addHeader("Authorization","Bearer "+String(c.appDeviceToken));
-      http.addHeader("CF-Access-Client-Id",c.cloudflareAccessClientId);
-      http.addHeader("CF-Access-Client-Secret",c.cloudflareAccessClientSecret);
-      const int code=http.POST(self.request_);
-      if(code==200 && http.getSize()>=0 && http.getSize()<=2048) {
-        self.response_=http.getString(); self.success_=true;
-      }
-      http.end();
-    }
-    self.state_.store(2);
-  }
+  if(config.protocol!=AppConfig::UploadConfig::Protocol::Https || token_.isEmpty()) return;
+  ready_=HttpsWorker::shared().begin(LiveUpload::trustRoot());
 }
 void RemoteLogs::loop(bool enabled) {
-  if(!task_ || state_.load()==1) return;
-  if(!enabled) { file_.close(); job_=""; request_=""; response_=""; state_.store(0); return; }
-  if(state_.load()==2) {
+  if(!ready_)return;
+  if(state_==1){
+    const auto *result=HttpsWorker::shared().result(HttpsWorker::Owner::Logs);
+    if(!result)return;
+    success_=result->status==200;response_=success_?String(result->body):String("");
+    HttpsWorker::shared().release(HttpsWorker::Owner::Logs);state_=2;
+  }
+  if(!enabled) { HttpsWorker::shared().cancelPending(HttpsWorker::Owner::Logs);file_.close(); job_=""; request_=""; response_=""; state_=0; return; }
+  if(state_==2) {
     if(failed_==success_) { systemLog.add(success_?"remote_logs_recovered":"remote_logs_unavailable",0,success_?1:2); failed_=!success_; }
-    interval_=5000;
+    // Unsupported/unavailable log endpoints must not starve telemetry TLS.
+    interval_=success_?5000:60000;
     if(success_) {
-      StaticJsonDocument<2048> response;
-      if(deserializeJson(response,response_)!=DeserializationError::Ok) { state_.store(0); return; }
+      DynamicJsonDocument response(2048);
+      if(deserializeJson(response,response_)!=DeserializationError::Ok) { state_=0;interval_=60000;return; }
       DynamicJsonDocument out(24576);
       out["device_id"]=config_.deviceId; out["enabled"]=true;
       const JsonObject cmd=response["command"];
@@ -69,8 +54,8 @@ void RemoteLogs::loop(bool enabled) {
           const bool changed=!cmd["size"].isNull() && cmd["size"].as<uint32_t>()!=size_;
           if(!file_ || changed || size_>16*1024*1024 || offset>size_ || file_.size()<size_ || !file_.seek(offset)) out["error"]="read_failed";
           else {
-            uint8_t bytes[2048]; const size_t length=std::min(uint32_t(sizeof(bytes)),size_-offset);
-            if(file_.read(bytes,length)!=int(length)) out["error"]="read_failed";
+            std::unique_ptr<uint8_t[]> bytes(new(std::nothrow) uint8_t[2048]); const size_t length=std::min(uint32_t(2048),size_-offset);
+            if(!bytes || file_.read(bytes.get(),length)!=int(length)) out["error"]="read_failed";
             else {
               String hex; hex.reserve(length*2); constexpr char digits[]="0123456789abcdef";
               for(size_t i=0;i<length;++i) { hex+=digits[bytes[i]>>4]; hex+=digits[bytes[i]&15]; }
@@ -81,13 +66,16 @@ void RemoteLogs::loop(bool enabled) {
       }
       request_=""; serializeJson(out,request_);
     }
-    state_.store(0);
+    state_=0;
   }
   if(WiFi.status()!=WL_CONNECTED || uint32_t(millis()-lastRequest_)<interval_) return;
   if(request_.isEmpty()) {
     StaticJsonDocument<256> out; out["device_id"]=config_.deviceId; out["enabled"]=true; serializeJson(out,request_);
   }
-  lastRequest_=millis(); state_.store(1); xTaskNotifyGive(task_);
+  const String url="https://"+host_+":"+String(config_.mqttPort)+path_+"/logs";
+  if(HttpsWorker::shared().submit(HttpsWorker::Owner::Logs,url.c_str(),request_.c_str(),token_.c_str(),accessId_.c_str(),accessSecret_.c_str())){
+    lastRequest_=millis();state_=1;
+  }
 }
 #else
 void RemoteLogs::begin(const AppConfig::UploadConfig &) {}

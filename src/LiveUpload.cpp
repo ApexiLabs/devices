@@ -1,4 +1,7 @@
 #include "LiveUpload.h"
+#include "UploadAcknowledgement.h"
+#include "LoggerAuthorization.h"
+#include "HttpsSlot.h"
 
 #include <ArduinoJson.h>
 
@@ -21,7 +24,7 @@ constexpr uint32_t kNetworkClientTimeoutMs = 500;
 constexpr uint32_t kStatusHeartbeatMs = 30000;
 constexpr uint32_t kPairingCodeRefreshMs = 10UL * 60UL * 1000UL;
 constexpr size_t kRemoteConfigJsonCapacity = 1024;
-constexpr size_t kHttpsResponseJsonCapacity = 1536;
+constexpr size_t kHttpsResponseJsonCapacity = 4096;
 constexpr uint32_t kHttpsTimeoutMs = 4000;
 constexpr uint8_t kReplayRecordsPerCycle = 2;
 
@@ -82,6 +85,7 @@ bool LiveUpload::begin(const AppConfig::UploadConfig &config,
                        const bool remoteManagementEnabled,
                        const uint32_t appliedConfigVersion) {
   config_ = config;
+  uploadEvidence_ = {};
   enabled_ = enabled;
   remoteManagementEnabled_ = remoteManagementEnabled;
   appliedConfigVersion_ = appliedConfigVersion;
@@ -113,8 +117,10 @@ bool LiveUpload::begin(const AppConfig::UploadConfig &config,
   }
 
   if (config_.protocol == AppConfig::UploadConfig::Protocol::Https) {
+    storeForwardQueue_.begin(AppConfig::kStoreForward.enabled,
+                             AppConfig::kStoreForward.maximumBytes);
     if (strlen(config_.httpsPath) == 0 || strlen(config_.cloudflareAccessClientId) == 0 ||
-        strlen(config_.cloudflareAccessClientSecret) == 0 || strlen(config_.appDeviceToken) == 0) {
+        strlen(config_.cloudflareAccessClientSecret) == 0) {
       lastError_ = "HTTPS credentials not configured";
       return false;
     }
@@ -129,8 +135,10 @@ bool LiveUpload::begin(const AppConfig::UploadConfig &config,
     httpsClient_.setCACert(kIsrgRootX1);
 #endif
     httpsClient_.setTimeout(kHttpsTimeoutMs);
-    storeForwardQueue_.begin(AppConfig::kStoreForward.enabled,
-                             AppConfig::kStoreForward.maximumBytes);
+#if defined(ESP32)
+    workerReady_=HttpsWorker::shared().begin(trustRoot());
+    if(!workerReady_){lastError_="HTTPS worker unavailable";return false;}
+#endif
     lastError_ = "";
     return true;
   }
@@ -159,6 +167,9 @@ void LiveUpload::loop() {
   }
 
   const uint32_t nowMs = millis();
+#if defined(ESP32)
+  if(config_.protocol==AppConfig::UploadConfig::Protocol::Https){serviceHttps(nowMs);return;}
+#endif
   if (remoteManagementEnabled_ &&
       Logic::intervalElapsed(nowMs, pairingCodeGeneratedMs_, kPairingCodeRefreshMs)) {
     rotatePairingCode(nowMs);
@@ -198,6 +209,9 @@ bool LiveUpload::publishIfDue(const AppState &state) {
 
   const uint32_t nowMs = millis();
   const bool snapshotDue = (nowMs - lastPublishMs_) >= config_.publishIntervalMs;
+#if defined(ESP32)
+  if(config_.protocol==AppConfig::UploadConfig::Protocol::Https)return snapshotDue?captureHttps(state):false;
+#endif
   if (WiFi.status() != WL_CONNECTED) {
     publishOfflineStatusAndDisconnect();
     lastError_ = "Wi-Fi disconnected";
@@ -269,8 +283,16 @@ bool LiveUpload::publishIfDue(const AppState &state) {
 
 bool LiveUpload::isEnabled() const { return enabled_; }
 
+UploadEvidence::Status LiveUpload::uploadEvidence(uint32_t nowMs) {
+  const bool https=config_.protocol == AppConfig::UploadConfig::Protocol::Https;
+  return uploadEvidence_.status(enabled_, WiFi.status()==WL_CONNECTED &&
+      (https ? (strlen(authorization_?authorization_->bearer():config_.appDeviceToken)>0 &&
+       (lastHttpStatus_==0 || (lastHttpStatus_>=200 && lastHttpStatus_<300))):
+       mqttClient_.connected()), https, nowMs, config_.publishIntervalMs);
+}
+
 bool LiveUpload::isConnected() {
-  return config_.protocol == AppConfig::UploadConfig::Protocol::Https ? httpsConnected_
+  return config_.protocol == AppConfig::UploadConfig::Protocol::Https ? (WiFi.status()==WL_CONNECTED && httpsConnected_)
                                                                       : mqttClient_.connected();
 }
 
@@ -430,12 +452,29 @@ void LiveUpload::publishOfflineStatusAndDisconnect() {
 }
 
 bool LiveUpload::publishStatus(const bool connected) {
+#if defined(ESP32)
+  if(config_.protocol==AppConfig::UploadConfig::Protocol::Https){statusRequested_=true;return workerReady_;}
+#endif
   const String payload = buildStatusJson(connected);
   if (config_.protocol == AppConfig::UploadConfig::Protocol::Https) {
     String response;
+    bool usedFallback=false;
     if (!postHttps("status", payload, &response)) {
-      return false;
+      if(authorization_ && authorization_->hasRotation() && lastHttpStatus_>=400 && lastHttpStatus_<500 &&
+         !Logic::isRetryableHttpStatus(lastHttpStatus_)) {
+        authorization_->beginRotationFallback();
+        const String fallbackPayload=buildStatusJson(connected);response="";
+        const bool oldAccepted=postHttps("status",fallbackPayload,&response) && UploadEvidence::acceptedResponse(lastHttpStatus_,response.c_str());
+        if(!authorization_->finishRotationFallback(oldAccepted))return false;
+        usedFallback=true;
+      } else {
+        if(authorization_ && (lastHttpStatus_==401||lastHttpStatus_==403))authorization_->statusResult(false);
+        return false;
+      }
     }
+    const bool accepted=UploadEvidence::acceptedResponse(lastHttpStatus_,response.c_str());
+    if(authorization_ && !usedFallback)authorization_->statusResult(accepted);
+    if(!accepted){httpsConnected_=false;lastError_="Invalid server status acknowledgement";return false;}
     httpsConnected_ = connected;
     lastStatusPublishMs_ = millis();
     consumeHttpsDesiredConfig(response);
@@ -532,24 +571,29 @@ bool LiveUpload::publishSnapshot(const AppState &state) {
     }
     httpsConnected_ = true;
   } else if (!mqttClient_.publish(liveTopic().c_str(), payload.c_str(), false)) {
+    uploadEvidence_.record(false,millis());
     lastError_ = "MQTT live publish failed";
     return false;
   }
+  if(config_.protocol != AppConfig::UploadConfig::Protocol::Https)
+    uploadEvidence_.record(true,millis());
   lastSequence_ = sequence;
   return true;
 }
 
 bool LiveUpload::queueSnapshot(const AppState &state) {
+  const String uploadError=WiFi.status()!=WL_CONNECTED?String("Wi-Fi disconnected"):
+      (lastHttpError_.isEmpty()?String("HTTPS unavailable"):lastHttpError_);
   const uint32_t sequence = lastSequence_ + 1;
   const String payload = buildSnapshotJson(state, sequence);
   if (!storeForwardQueue_.enqueue(payload)) {
-    lastError_ = "HTTPS unavailable and onboard queue failed: " + storeForwardQueue_.lastError();
+    lastError_ = uploadError + "; onboard queue failed: " + storeForwardQueue_.lastError();
     return false;
   }
   lastSequence_ = sequence;
   lastPublishMs_ = millis();
   httpsConnected_ = false;
-  lastError_ = "HTTPS unavailable; snapshot stored onboard";
+  lastError_ = uploadError + "; snapshot stored onboard";
   return true;
 }
 
@@ -584,9 +628,18 @@ const char *LiveUpload::trustRoot() { return kIsrgRootX1; }
 
 bool LiveUpload::postHttps(const char *kind, const String &payload, String *responseBody) {
   lastHttpsAttemptMs_ = millis();
+  const char *effectiveBearer=authorization_?authorization_->bearer(strcmp(kind,"status")==0):config_.appDeviceToken;
+  if(strlen(effectiveBearer)==0) {
+    lastHttpStatus_=0;lastPostRetryable_=true;httpsConnected_=false;
+    lastError_="Device authorization required";lastHttpError_=lastError_;return false;
+  }
   HTTPClient http;
+#if defined(ESP32)
+  HttpsSlot slot;
+  if(!slot){lastPostRetryable_=true;lastHttpStatus_=0;lastError_="HTTPS busy; retrying";return false;}
+#endif
   http.setTimeout(kHttpsTimeoutMs);
-  http.setReuse(true);
+  http.setReuse(false);
   // Cloudflare's browser-integrity checks reject requests without a stable
   // client signature before Access evaluates the service-token headers.
   http.setUserAgent("ApexiLabs-Logger/1.0");
@@ -596,14 +649,16 @@ bool LiveUpload::postHttps(const char *kind, const String &payload, String *resp
   }
   url += String(config_.httpsPath) + "/" + String(kind);
   if (!http.begin(httpsClient_, url)) {
+    if(strcmp(kind,"snapshot")==0) uploadEvidence_.record(false,millis());
     lastHttpStatus_ = -1;
     lastPostRetryable_ = true;
     lastError_ = "HTTPS request setup failed";
+    lastHttpError_=lastError_;
     httpsConnected_ = false;
     return false;
   }
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("Authorization", "Bearer " + String(config_.appDeviceToken));
+  http.addHeader("Authorization", "Bearer " + String(effectiveBearer));
   http.addHeader("CF-Access-Client-Id", config_.cloudflareAccessClientId);
   http.addHeader("CF-Access-Client-Secret", config_.cloudflareAccessClientSecret);
 #if defined(ESP8266)
@@ -615,7 +670,17 @@ bool LiveUpload::postHttps(const char *kind, const String &payload, String *resp
   lastHttpStatus_ = status;
   lastPostRetryable_ = Logic::isRetryableHttpStatus(status);
   const String body = status > 0 ? http.getString() : "";
+  if(strcmp(kind,"snapshot")==0)
+    uploadEvidence_.record(UploadEvidence::acceptedResponse(status,body.c_str()),millis());
   http.end();
+  if(status>=200 && status<300 && strcmp(kind,"snapshot")==0 &&
+      !UploadEvidence::acceptedResponse(status,body.c_str())) {
+    lastPostRetryable_=true;
+    lastError_="HTTPS snapshot acknowledgement invalid";
+    lastHttpError_=lastError_;
+    httpsConnected_=false;
+    return false;
+  }
   if (status < 200 || status >= 300) {
     if (status < 0) {
       lastError_ = "HTTPS " + HTTPClient::errorToString(status);
@@ -631,6 +696,7 @@ bool LiveUpload::postHttps(const char *kind, const String &payload, String *resp
     } else {
       lastError_ = "HTTPS upload rejected " + String(status);
     }
+    lastHttpError_=lastError_;
     httpsConnected_ = false;
     return false;
   }
@@ -638,20 +704,35 @@ bool LiveUpload::postHttps(const char *kind, const String &payload, String *resp
     *responseBody = body;
   }
   lastPostRetryable_ = false;
+  lastHttpError_="";
   return true;
 }
 
 void LiveUpload::consumeHttpsDesiredConfig(const String &responseBody) {
-  if (!remoteManagementEnabled_ || responseBody.isEmpty()) {
+  if (responseBody.isEmpty()) {
     return;
   }
-  StaticJsonDocument<kHttpsResponseJsonCapacity> document;
-  if (deserializeJson(document, responseBody) != DeserializationError::Ok ||
-      !document["desired_config"].is<JsonObject>()) {
+  DynamicJsonDocument document(kHttpsResponseJsonCapacity);
+  if (deserializeJson(document, responseBody) != DeserializationError::Ok) {
     return;
   }
+#if defined(ESP32)
+  batchEnabled_=document["ingest_capabilities"]["snapshot_batch_v1"].is<bool>() && document["ingest_capabilities"]["snapshot_batch_v1"].as<bool>() &&
+    document["ingest_capabilities"]["max_snapshots"].is<unsigned>() && document["ingest_capabilities"]["max_snapshots"].as<unsigned>()>=8;
+  if(!batchEnabled_ && !batchAcknowledged_) {
+    // A server rollback can withdraw capability after an ambiguous batch.
+    // Keep every queue record; only discard the optional batching envelope.
+    batchRecords_.clear();batchPayload_="";batchId_="";
+  }
+  performance_.batchEnabled=batchEnabled_;
+#endif
+  if(!document["desired_config"].is<JsonObject>())return;
   String encoded;
   serializeJson(document["desired_config"], encoded);
+  if(authorization_ && !authorization_->stageDesired(document["desired_config"].as<JsonObjectConst>())) {
+    managementError_="Credential rotation rejected or storage unavailable";return;
+  }
+  if(!remoteManagementEnabled_)return; // Security lifecycle never enables remote sensor configuration.
   RemoteConfig candidate{};
   if (!parseRemoteConfig(reinterpret_cast<const uint8_t *>(encoded.c_str()), encoded.length(), candidate) ||
       candidate.version <= appliedConfigVersion_) {
@@ -689,10 +770,15 @@ String LiveUpload::buildStatusJson(const bool connected) const {
   json += "\"session_id\":\"" + jsonEscape(sessionId_) + "\",";
   json += "\"protocol\":\"" + protocolName() + "\",";
   json += "\"connected\":" + String(connected ? "true" : "false");
-  if (remoteManagementEnabled_) {
+  if (remoteManagementEnabled_ || authorization_) {
     json += ",\"management\":{";
-    json += "\"enabled\":true,";
-    json += "\"pairing_code\":\"" + jsonEscape(pairingCode_) + "\",";
+    json += "\"enabled\":"+String(remoteManagementEnabled_?"true":"false");
+    if(authorization_) {
+      const String ack=authorization_->rotationAcknowledgement();
+      if(!ack.isEmpty())json+=",\"credential_rotation_ack\":"+ack;
+    }
+    if(remoteManagementEnabled_) {
+    json += ",\"pairing_code\":\"" + jsonEscape(pairingCode_) + "\",";
     json += "\"pairing_expires_in_s\":" + String(pairingCodeExpiresInSeconds()) + ",";
     json += "\"config_version\":" + String(appliedConfigVersion_) + ",";
     json += "\"status\":\"" + jsonEscape(managementStatus_) + "\",";
@@ -704,6 +790,7 @@ String LiveUpload::buildStatusJson(const bool connected) const {
     json += "\"ntp_secondary\":\"" + jsonEscape(reportedNtpSecondary_) + "\",";
     json += "\"tz_rule\":\"" + jsonEscape(reportedTimeZoneRule_) + "\",";
     json += "\"tz_label\":\"" + jsonEscape(reportedTimeZoneLabel_) + "\"}";
+    }
     json += "}";
   }
   json += "}";

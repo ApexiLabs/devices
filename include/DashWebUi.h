@@ -1,11 +1,15 @@
 #pragma once
 
-// Match Logger's existing tokens and card density; show only live Dash features.
+// App brand, Logger status density; secondary help stays in accessible popovers.
 inline constexpr char kDashWebUi[] = R"html(<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="icon" href="data:,"><title>Apexi Dash</title><style>
+<link rel="icon" href="data:,"><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"><title>ApexiLabs Dash</title><style>
 :root{--bg:#09131f;--surface:#111d2a;--border:#29394a;--text:#ecf2f8;--muted:#95a8ba;--accent:#6dd6ff;--ok:#73d5a2;--warn:#f4c46c;--bad:#ff8d8d}
-*{box-sizing:border-box}body{margin:0;font-family:"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text)}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text)}
+.brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:var(--text);font-weight:700;letter-spacing:.2px}.brand svg{width:26px;height:26px;flex-shrink:0}.brand em{color:#60a5fa;font-style:normal}
+.actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.actions a{padding:10px;text-decoration:none}.actions a[aria-current=page]{color:var(--text);text-decoration:underline;text-underline-offset:6px}
+.card-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}.help{position:relative;flex-shrink:0}.help summary{cursor:pointer;list-style:none;display:grid;place-items:center;width:44px;height:44px;color:var(--accent)}.help summary::-webkit-details-marker{display:none}.help summary:focus-visible{outline:2px solid var(--accent)}.help summary:hover{background:var(--bg);border-radius:8px}.help p{position:absolute;right:0;top:100%;z-index:3;margin:0;padding:14px;width:min(300px,75vw);background:var(--bg);border:1px solid var(--border);border-radius:8px;line-height:1.5;color:var(--text);box-shadow:0 8px 24px #0006}
+body.editing .grid>.card:not(.settings-card){display:none}body.editing .settings-card{grid-column:1/-1;max-width:48rem;width:100%;justify-self:center}body.editing .settings-card>#readings,body.editing .settings-card>#alarm-state,body.editing .settings-card>.summary{display:none}
 header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 20px;background:#102235;border-bottom:1px solid var(--border)}
 h1{margin:0;font-size:1.4rem}.header-meta{margin-top:4px;color:var(--muted);font-size:.88rem}
 main{width:min(100%,72rem);margin:auto;padding:16px}.grid{display:grid;gap:12px;grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -22,19 +26,19 @@ label{display:block;margin:14px 0 6px}select,input{width:100%;padding:10px;backg
 .reading{display:flex;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid var(--border)}.reading:last-child{border-bottom:0}.reading strong{min-width:0;text-align:right;overflow-wrap:anywhere}
 [hidden]{display:none!important}form button{margin-top:16px}
 #lcd-state{padding-bottom:12px}
+.upload-indicator{color:var(--muted)}.upload-indicator.ok{color:var(--ok)}.upload-indicator.warn{color:var(--warn)}.upload-indicator.bad{color:var(--bad)}.upload-indicator::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:currentColor;margin-right:7px}
 .gauge-fields{border:1px solid var(--border);margin:18px 0;padding:12px;min-width:0}.gauge-fields legend{padding:0 6px;font-weight:600}.colour-points{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.check{display:flex;gap:8px;align-items:center}.check input{width:auto}.alarm-banner{padding:10px;border:1px solid var(--bad);color:var(--bad);margin:12px 0}.gauge-fields input{min-width:0}
 .grid:has(#display-form:not([hidden])){align-items:start}
 .lcd-preview{display:block;width:240px;max-width:100%;aspect-ratio:1;margin:18px auto;background:#000;border-radius:50%;border:1px solid var(--border);image-rendering:pixelated}.lcd-preview.stale{opacity:.35}.lcd-actions{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
 @media(max-width:620px){header{padding:16px;flex-direction:column}main{padding:12px}.grid{grid-template-columns:1fr}}
-</style></head><body><header><div><h1>Apexi Dash</h1><div class="header-meta" id="stamp" role="status">Connecting to Dash…</div></div><button id="refresh" type="button">Refresh status</button></header>
+</style></head><body><header><div><h1><a class="brand" href="/" aria-label="ApexiLabs Dash home"><svg viewBox="0 0 256 256" aria-hidden="true"><defs><linearGradient id="apx-g" x1="36" y1="220" x2="220" y2="36" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#3B82F6"/><stop offset="0.55" stop-color="#60A5FA"/><stop offset="1" stop-color="#22D3EE"/></linearGradient><linearGradient id="apx-h" x1="88" y1="210" x2="170" y2="70" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0.12"/></linearGradient></defs><path d="M128 28 L232 216 H24 Z" fill="url(#apx-g)"/><path d="M128 58 L205 200 H51 Z" fill="#0B1220" opacity="0.88"/><path d="M128 28 L232 216 H150 Z" fill="url(#apx-h)"/></svg><span>ApexiLabs <em>Dash</em></span></a></h1><div class="header-meta" id="stamp" role="status">Connecting to Dash…</div></div><nav class="actions" aria-label="Dash pages"><a id="dashboard-nav" href="/">Dashboard</a><a id="settings-nav" href="/settings">Settings</a><button id="refresh" type="button">Refresh status</button></nav></header>
 <main><section class="grid" aria-label="Dash status">
 <article class="card"><h2>Live LCD</h2><img id="lcd-preview" class="lcd-preview" width="240" height="240" alt="Live rendered image from Dash's round LCD" hidden>
 <p id="lcd-state" class="summary" role="status">Waiting for LCD image…</p><div class="lcd-actions"><button id="lcd-pause" type="button">Pause preview</button><a href="/api/lcd.bmp" target="_blank" rel="noopener">Open snapshot</a></div>
 </article>
-<article class="card"><h2>Sensor readings</h2><div id="readings">Waiting for Logger telemetry…</div>
+<article class="card settings-card"><h2 id="readings-heading">Sensor readings</h2><div id="readings">Waiting for Logger telemetry…</div>
 <p id="alarm-state" class="alarm-banner" role="status" hidden></p>
 <p class="summary">Refresh: <strong id="rate">—</strong></p>
-<p><a href="/settings">Configure LCD readings</a></p>
 <form id="display-form" hidden><p class="summary">Show one or two large values. Set either reading to Hidden for one centred, full-screen value. Keep both active for two large stacked values.</p><label for="slot0">First LCD reading</label><select id="slot0"></select>
 <label for="slot1">Second LCD reading</label><select id="slot1"></select>
 <label for="refresh-ms">Display refresh interval (milliseconds)</label><input id="refresh-ms" type="number" min="250" max="5000" step="250" required>
@@ -45,15 +49,20 @@ label{display:block;margin:14px 0 6px}select,input{width:100%;padding:10px;backg
 <article class="card"><h2>Dash Link</h2><div class="value" id="link">Checking…</div>
 <div class="status"><span>Bluetooth</span><span class="state" id="ble">—</span></div>
 <div class="status"><span>Logger handshake</span><span class="state" id="handshake">—</span></div>
+<div class="status"><span>Telemetry upload</span><span id="upload-state" class="upload-indicator" role="status">Unknown</span></div>
 <p class="summary">Logger connects automatically when it is available.</p>
-<p><a href="/api/diagnostics" target="_blank" rel="noopener" download="dash-diagnostics.json">Download troubleshooting log</a></p>
-<p class="summary">Logging is always on: latest 64 sensor-state transitions plus receive/link counters. RAM only; download before reboot or OTA.</p></article>
+<div class="card-heading"><a href="/api/diagnostics.log" download="dash-diagnostics.log">Download troubleshooting log</a><details class="help"><summary aria-label="About troubleshooting logs">ⓘ</summary><p>Logging is always on: latest 64 sensor-state transitions plus receive/link counters. RAM only; download before reboot or OTA. Times are device uptime, not wall-clock time.</p></details></div></article>
 <article class="card"><h2>Connectivity</h2><div class="status"><span>IoT Wi-Fi</span><span class="state" id="wifi">—</span></div>
 <div class="status"><span>Station IP</span><span id="ip">—</span></div><div class="status"><span>Recovery AP IP</span><span id="ap">—</span></div>
 <div class="status"><span>Uptime</span><span id="uptime">—</span></div></article>
-<article class="card wide"><h2>Firmware updates</h2><div class="status"><span>Password-protected OTA</span><span class="state" id="ota">—</span></div>
+<article class="card"><div class="card-heading"><h2>Battery &amp; power</h2><details class="help"><summary aria-label="About battery estimates">ⓘ</summary><p>Dash battery · estimate for a 1S 4.2V LiPo, not a fuel gauge. Charging and load affect accuracy. Trend needs two minutes. This board cannot report USB power, charging state or battery presence.</p></details></div>
+<div class="status"><span>Estimated charge</span><span id="batteryPercent">--</span></div>
+<div class="status"><span>Battery voltage</span><span id="batteryVoltage">--</span></div>
+<div class="status"><span>Voltage trend</span><span id="batteryTrend">--</span></div>
+</article>
+<article class="card"><div class="card-heading"><h2>Firmware updates</h2><details class="help"><summary aria-label="About firmware updates">ⓘ</summary><p>Use the repository's <code>scripts/upload-dash-ota.py</code> helper from a trusted network. Updates restart Dash. Keep power connected throughout the update.</p></details></div><div class="status"><span>Password-protected OTA</span><span class="state" id="ota">—</span></div>
 <div class="status"><span>Hostname</span><span>apexi-dash.local</span></div><div class="status"><span>Build</span><span id="build">—</span></div>
-<p class="summary">Use the repository's <code>scripts/upload-dash-ota.py</code> helper from a trusted network. Updates restart Dash. Keep power connected throughout the update.</p></article>
+</article>
 </section></main><script>
 const el=id=>document.getElementById(id);let busy=false,interval=1000,configured=false,catalogKey='',csrf='',lastStatus=null;
 let gaugeControls=[] ,gaugesConfigured=false;
@@ -74,6 +83,10 @@ lcdKey=r.headers.get('X-LCD-Boot')+'-'+r.headers.get('X-LCD-Frame');el('lcd-stat
 }catch(e){URL.revokeObjectURL(url);throw e}
 }catch(e){lcdUnavailable('Preview unavailable — retrying. Last image may be stale.')}finally{lcdBusy=false}}
 const editing=location.pathname==='/settings';el('display-form').hidden=!editing;
+document.body.classList.toggle('editing',editing);
+el(editing?'settings-nav':'dashboard-nav').setAttribute('aria-current','page');
+if(editing){el('readings-heading').textContent='Display settings';document.title='ApexiLabs Dash · Settings'}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.help[open]').forEach(d=>d.open=false)});
 if(editing)fetch('/api/settings',{cache:'no-store'}).then(r=>{if(!r.ok)throw Error();return r.json()}).then(s=>{csrf=s.csrf}).catch(()=>{el('save-state').textContent='Cannot authorize settings. Reload and sign in.'});
 function renderSensors(s){
 const alarms=s.sensors.filter(v=>v.valid&&v.fresh&&v.alarm).map(v=>v.name+' '+v.alarm);
@@ -84,7 +97,8 @@ const box=el('readings');box.replaceChildren();
 if(!s.sensors.length)box.textContent='Waiting for Logger telemetry…';
 for(const v of s.sensors){const row=document.createElement('div');row.className='reading';const name=document.createElement('span');name.textContent=v.name;const value=document.createElement('strong');
 const units=v.units==='C'?'°C':v.units;
-value.textContent=v.valid?v.value.toFixed(1)+' '+units:Number.isFinite(v.lastGoodValue)?v.lastGoodValue.toFixed(1)+' '+units+' · '+(v.displayState||'Stale')+' (held)':!v.fresh?'Unavailable — stale':v.fault==='none'?'No valid sample':v.fault.replaceAll('_',' ');
+const decimals=v.units==='bar'?2:1;
+value.textContent=v.valid?v.value.toFixed(decimals)+' '+units:Number.isFinite(v.lastGoodValue)?v.lastGoodValue.toFixed(decimals)+' '+units+' · '+(v.displayState||'Stale')+' (held)':!v.fresh?'Unavailable — stale':v.fault==='none'?'No valid sample':v.fault.replaceAll('_',' ');
 value.className=v.valid&&v.alarm?'bad':v.valid?'ok':'warn';row.append(name,value);box.append(row)}
 const key=JSON.stringify(s.sensors.map(v=>[v.id,v.name]));
 if(!configured||key!==catalogKey){for(let i=0;i<2;i++){const select=el('slot'+i),selected=configured?select.value:s.slots[i];select.replaceChildren();
@@ -125,18 +139,33 @@ const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'appl
 if(!r.ok)throw Error(await r.text());configured=false;el('save-state').textContent='Saved on Dash.';await refresh();
 }catch(err){el('save-state').textContent='Not saved: '+err.message}finally{el('save').disabled=false}});
 function state(id,text,level){el(id).textContent=text;el(id).className='state '+level}
+function renderBattery(b){
+el('batteryPercent').textContent=Number.isFinite(b?.battery_percent)?'~'+b.battery_percent+'%':'Unavailable';
+el('batteryVoltage').textContent=Number.isFinite(b?.battery_voltage)?b.battery_voltage.toFixed(2)+' V':'--';
+el('batteryTrend').textContent=b?.battery_trend||'Unavailable';
+}
+function renderUpload(upload){
+const labels={accepted:['Server accepted','ok'],unconfirmed:['Sent · unconfirmed','warn'],failed:['Upload failed','bad'],disabled:['Disabled',''],stale:['Status stale',''],unknown:['Unknown','']};
+const [label,level]=labels[upload?.state]||labels.unknown;
+el('upload-state').textContent=label;el('upload-state').className='upload-indicator '+level;
+el('upload-state').title=upload?.state==='accepted'?'Server accepted a telemetry snapshot; it may be queued data, not the latest sample.':upload?.state==='unconfirmed'?'MQTT transport sent data; server receipt is not confirmed.':label;
+}
 async function refresh(manual=false){if(busy)return;busy=true;if(manual)el('refresh').disabled=true;
 try{const r=await fetch('/api/status',{cache:'no-store',signal:AbortSignal.timeout(5000)});if(!r.ok)throw Error();const s=await r.json();
 renderSensors(s);
+renderUpload(s.bleConnected&&s.loggerReady?s.upload:null);
+renderBattery(s.battery);
 lastStatus=s;
-updateLcd(s);
+if(!editing)updateLcd(s);
 el('link').textContent=s.loggerReady?'Connected OK':s.bleConnected?'Handshaking':'Waiting for Logger';
 state('ble',s.bleConnected?'CONNECTED':'DISCONNECTED',s.bleConnected?'ok':'warn');state('handshake',s.loggerReady?'READY':'WAITING',s.loggerReady?'ok':'warn');
 state('wifi',s.wifiConnected?'CONNECTED':'OFFLINE',s.wifiConnected?'ok':'warn');el('ip').textContent=s.stationIp||'Not assigned';el('ap').textContent=s.apIp;
 state('ota',s.otaReady?'READY':s.otaEnabled?'WAITING FOR WI-FI':'DISABLED',s.otaReady?'ok':'warn');
 el('build').textContent=s.build;el('uptime').textContent=Math.floor(s.uptimeSeconds/60)+'m '+s.uptimeSeconds%60+'s';
-el('stamp').textContent='Live · updated '+new Date().toLocaleTimeString();
+el('stamp').textContent=new Date().toLocaleString()+' '+Intl.DateTimeFormat().resolvedOptions().timeZone+' (browser) | uptime '+el('uptime').textContent;
 }catch(e){lcdUnavailable('Dash unreachable — last image may be stale.');el('stamp').textContent='Dash unreachable — reconnecting. Last good readings held.';
+renderUpload(null);
+renderBattery(null);
 if(lastStatus)renderSensors({...lastStatus,sensors:lastStatus.sensors.map(v=>({...v,valid:false,fresh:false,lastGoodValue:v.valid?v.value:v.lastGoodValue,displayState:'Dash offline'}))});else el('readings').textContent='Unavailable — Dash unreachable';
 el('link').textContent='Unavailable';for(const id of ['ble','handshake','wifi','ota'])state(id,'UNKNOWN','warn');for(const id of ['ip','ap','uptime','build'])el(id).textContent='—';}
 finally{busy=false;if(manual)el('refresh').disabled=false}}

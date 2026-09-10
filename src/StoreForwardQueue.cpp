@@ -1,7 +1,9 @@
 #include "StoreForwardQueue.h"
+#include "BlankPartition.h"
 
 #if defined(ESP32)
 #include <LittleFS.h>
+#include <esp_partition.h>
 
 #include <cstddef>
 
@@ -35,9 +37,23 @@ bool StoreForwardQueue::begin(const bool enabled, const size_t maximumBytes) {
   lastError_ = "Onboard store-and-forward requires ESP32";
   return false;
 #else
-  if (!LittleFS.begin(true, "/littlefs", 10, "littlefs")) {
-    lastError_ = "LittleFS mount failed";
-    return false;
+  // TinyC6's unchanged default partition table labels its filesystem spiffs.
+  // Prefer the explicit logger partition; never touch arbitrary data partitions.
+  const esp_partition_t *partition=esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,"littlefs");
+  if(!partition) partition=esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,"spiffs");
+  if(!partition) { lastError_="Filesystem partition missing"; return false; }
+  if (!LittleFS.begin(false, "/littlefs", 10, partition->label)) {
+    // Only initialise a wholly erased partition. A corrupt/foreign filesystem
+    // may contain recoverable data and must never be autoformatted.
+    if(!BlankPartition::verify(partition->size,[&](size_t offset,uint8_t *bytes,size_t length) {
+      const bool ok=esp_partition_read(partition,offset,bytes,length)==ESP_OK;
+      yield(); return ok;
+    })) { lastError_="LittleFS mount failed; nonblank or unreadable data preserved"; return false; }
+    if(!LittleFS.format() || !LittleFS.begin(false,"/littlefs",10,partition->label)) {
+      lastError_="Blank LittleFS initialization failed"; return false;
+    }
   }
   const size_t totalBytes = LittleFS.totalBytes();
   if (totalBytes <= kFilesystemReserveBytes + 2 * sizeof(RecordHeader)) {
@@ -78,7 +94,8 @@ bool StoreForwardQueue::enqueue(const String &payload) {
   return false;
 #else
   if (!ready_ || payload.isEmpty() || payload.length() > kMaximumPayloadBytes) {
-    lastError_ = ready_ ? "Queued payload size invalid" : "Store-and-forward unavailable";
+    if(ready_) lastError_="Queued payload size invalid";
+    else if(lastError_.isEmpty()) lastError_="Store-and-forward unavailable";
     return false;
   }
   const size_t recordBytes = sizeof(RecordHeader) + payload.length();
@@ -136,7 +153,11 @@ bool StoreForwardQueue::peek(String &payload) {
   }
   payload.reserve(header.length);
   while (payload.length() < header.length && file.available()) {
-    payload += static_cast<char>(file.read());
+    char chunk[256];
+    const size_t wanted=min(size_t(sizeof(chunk)),size_t(header.length-payload.length()));
+    const int received=file.read(reinterpret_cast<uint8_t *>(chunk),wanted);
+    if(received<=0)break;
+    payload.concat(chunk,static_cast<unsigned int>(received));
   }
   file.close();
   if (payload.length() != header.length ||
@@ -148,6 +169,43 @@ bool StoreForwardQueue::peek(String &payload) {
   }
   lastError_ = "";
   return true;
+#endif
+}
+
+bool StoreForwardQueue::peekBatch(std::vector<String> &payloads,size_t maximumRecords,size_t maximumBytes) {
+  payloads.clear();
+#if !defined(ESP32)
+  (void)maximumRecords;(void)maximumBytes;return false;
+#else
+  if(!ready_ || !pendingRecords() || !maximumRecords)return false;
+  maximumRecords=min(maximumRecords,size_t(8));payloads.reserve(maximumRecords);
+  const uint8_t first=oldestSegment();size_t bytes=0;
+  for(uint8_t pass=0;pass<2 && payloads.size()<maximumRecords;++pass) {
+    const uint8_t segment=pass?uint8_t(1-first):first;
+    if(!count_[segment])continue;
+    File file=LittleFS.open(segmentPath(segment),FILE_READ);
+    if(!file || !file.seek(metadata_.head[segment])){lastError_="Queue batch seek failed";break;}
+    for(uint32_t index=0;index<count_[segment] && payloads.size()<maximumRecords;++index) {
+      RecordHeader header{};
+      if(file.read(reinterpret_cast<uint8_t *>(&header),sizeof(header))!=sizeof(header) || header.magic!=kRecordMagic || !header.length || header.length>kMaximumPayloadBytes) {
+        lastError_="Queue batch header invalid";return !payloads.empty();
+      }
+      if(bytes+header.length+1>maximumBytes)return !payloads.empty();
+      String payload;payload.reserve(header.length);
+      while(payload.length()<header.length) {
+        char chunk[256];const size_t wanted=min(sizeof(chunk),size_t(header.length-payload.length()));
+        const int received=file.read(reinterpret_cast<uint8_t *>(chunk),wanted);
+        if(received<=0)break;
+        payload.concat(chunk,static_cast<unsigned int>(received));
+      }
+      if(payload.length()!=header.length || checksum(reinterpret_cast<const uint8_t *>(payload.c_str()),payload.length())!=header.checksum) {
+        lastError_="Queue batch checksum invalid";return !payloads.empty();
+      }
+      bytes+=payload.length()+1;payloads.push_back(std::move(payload));
+    }
+  }
+  if(!payloads.empty())lastError_="";
+  return !payloads.empty();
 #endif
 }
 

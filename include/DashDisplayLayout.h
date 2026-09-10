@@ -1,10 +1,16 @@
 #pragma once
+#include <cstring>
 namespace DashDisplayLayout {
+inline unsigned decimals(const char *units){return units && std::strcmp(units,"bar")==0?2:1;}
 struct Row { int labelY, valueY, detailY, scale; };
 constexpr int labelWidth=100;
 constexpr int detailWidth=88;
 constexpr int unitWidth=64;
 constexpr int digitSlant=8;
+constexpr int arcOuterRadius=120;
+constexpr int arcInnerRadius=104;
+constexpr int uploadDotX=231,uploadDotY=120,uploadDotRadius=4;
+constexpr int uploadDotBackingRadius=6;
 // Copy right-to-left so overlapping source pixels survive the in-place shear.
 // The caller reserves extra width; no second framebuffer is required.
 template<class Canvas> void italicize(Canvas& canvas,int x,int y,int width,int height) {

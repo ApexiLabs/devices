@@ -19,6 +19,14 @@ int main(){
   assert(colour(&r,-10,true)==colour(&r,0,true));assert(colour(&r,200,true)==colour(&r,140,true));
   assert(colour(&r,90,true)!=colour(&r,70,true)&&colour(&r,90,true)!=colour(&r,110,true));
   assert(colour(&r,150,false)==rgb(72,84,96));
+  assert(arcColour(&r,10,true)==rgb(255,0,0));
+  assert(arcColour(&r,125,true)==rgb(255,0,0));
+  assert(arcColour(&r,100,true)==colour(&r,100,true));
+  assert(arcColour(&r,150,false)==colour(&r,150,false));
+  assert(arcColour(nullptr,150,true)==colour(nullptr,150,true));
+  auto disabled=r;disabled.lowEnabled=false;disabled.highEnabled=false;
+  assert(arcColour(&disabled,10,true)==colour(&disabled,10,true));
+  assert(arcColour(&disabled,150,true)==colour(&disabled,150,true));
   Rules rules;rules.entries[0]=r;assert(valid(rules));
   assert(find(rules,"oil_temperature","bar")==nullptr);assert(find(rules,"other","C")==nullptr);
 #ifdef TEST_GAUGE_JSON

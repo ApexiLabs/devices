@@ -1,5 +1,7 @@
 #include "DashTelemetry.h"
 #include "DashDisplayLayout.h"
+#include "DashUploadStatus.h"
+#include "DashBattery.h"
 #include "DashLcdBitmap.h"
 #include "DashDiagnostics.h"
 #include <cassert>
@@ -7,6 +9,35 @@
 #include <iostream>
 using namespace DashTelemetry;
 int main() {
+  assert(DashDisplayLayout::decimals("bar")==2);
+  assert(DashDisplayLayout::decimals("C")==1);
+  assert(DashDisplayLayout::decimals(nullptr)==1);
+  {
+    DashBattery::Model b;assert(b.due(0)&&!b.fresh(0));
+    b.update(1350,1,0);assert(b.fresh(0));assert(std::abs(b.voltage-4.05f)<0.001f);assert(b.percent(0)==80);
+    assert(!b.due(999)&&b.due(1000));assert(!b.fresh(5000)&&b.percent(5000)==-1);
+    b.update(0,1,6000);assert(!b.valid);b.update(1500,1,7000);assert(!b.valid);
+    b.update(1350,std::numeric_limits<float>::quiet_NaN(),8000);assert(!b.valid);
+    b.update(1350,1,UINT32_MAX-99);assert(b.fresh(100));
+    b.update(1300,1,200);assert(b.voltage>3.9f&&b.voltage<4.05f);
+  }
+  {
+    using namespace DashUploadStatus;
+    DashUploadStatus::Model u;assert(u.view(true,0)==View::Unknown);
+    auto f=encode(3,1,0,1000);assert(u.accept(f,100));assert(u.view(true,100)==View::Accepted);
+    assert(u.view(false,100)==View::Unknown);assert(u.view(true,5100)==View::Stale);
+    assert(u.accept(encode(3,1,4900,1000),100));assert(u.view(true,200)==View::Stale);
+    assert(u.accept(encode(3,1,20000,10000),100));assert(u.view(true,200)==View::Accepted);
+    assert(u.accept(encode(4,2,0,1000),100));assert(u.view(true,100)==View::Unconfirmed);
+    assert(u.accept(encode(2,1,30,1000),100));assert(u.view(true,100)==View::Failed);
+    assert(u.accept(encode(1,0,kNever,1000),100));assert(u.view(true,100)==View::Disabled);
+    assert(!u.accept(encode(3,2,0,1000),100));assert(!u.accept(encode(3,1,kNever,1000),100));
+    assert(!u.accept(encode(3,1,0,0),100));f[0]=2;assert(!u.accept(f,100));
+    f=encode(3,1,0,1000);f[12]=1;assert(!u.accept(f,100));
+    assert(u.accept(encode(3,1,0,1000),UINT32_MAX-99));assert(u.view(true,100)==View::Accepted);assert(u.age(100)==200);
+    assert(window(UINT32_MAX)==UINT32_MAX-1);
+    u=DashUploadStatus::Model{};assert(u.view(true,100)==View::Unknown);
+  }
   struct Canvas {
     int pixels[5][20]{};
     int readPixel(int x,int y){assert(x>=0&&x<20&&y>=0&&y<5);return pixels[y][x];}
@@ -21,6 +52,11 @@ int main() {
   }
   DashDisplayLayout::italicize(canvas,0,0,1,1); // Degenerate height is safe.
   DashDiagnostics::Log log;
+  char logLine[180];
+  DashDiagnostics::formatEvent(logLine,sizeof(logLine),{12345,3001,0,3});
+  assert(std::string(logLine)=="[12.345] WARN apexi-dash sensor_state sensor=0 state=stale sample_age_ms=3001\n");
+  DashDiagnostics::formatEvent(logLine,sizeof(logLine),{13000,0,1,5});
+  assert(std::string(logLine).find("INFO apexi-dash")!=std::string::npos);
   for(unsigned i=0;i<70;++i)log.add(i,0,5,i);
   assert(log.size()==64 && log.at(0).ms==6 && log.at(63).ms==69);
   Sensor diagnosticSensor;
@@ -43,6 +79,12 @@ int main() {
   assert(word(54+0xe0*4)==0x00ff0000 && word(54+0x1c*4)==0x0000ff00);
   assert(word(54+3*4)==0x000000ff);
   constexpr auto single=DashDisplayLayout::row(1,0);
+  static_assert(DashDisplayLayout::arcOuterRadius==240/2,"Arcs reach the screen edge");
+  static_assert(DashDisplayLayout::arcInnerRadius==104,"Text clearance stays unchanged");
+  static_assert(DashDisplayLayout::uploadDotX-DashDisplayLayout::uploadDotRadius>224,"Upload dot clears alarm band");
+  static_assert(DashDisplayLayout::uploadDotX+DashDisplayLayout::uploadDotRadius<240,"Upload dot stays on screen");
+  static_assert(DashDisplayLayout::uploadDotX-DashDisplayLayout::uploadDotBackingRadius>224,"Backing clears alarm");
+  static_assert(DashDisplayLayout::uploadDotX+DashDisplayLayout::uploadDotBackingRadius<240,"Backing stays on screen");
   static_assert(50*50+90*90<104*104,"Top caption clears inner arc");
   static_assert(44*44+92*92<104*104,"Bottom detail clears inner arc");
   static_assert(32*32+96*96<104*104,"Enlarged units clear inner arc");

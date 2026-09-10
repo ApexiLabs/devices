@@ -1,5 +1,6 @@
 #include "WebUi.h"
 #include "SystemLog.h"
+#include "LoggerBranding.h"
 
 #if defined(ESP8266)
 #include <ESP8266WiFi.h>
@@ -99,6 +100,22 @@ void WebUi::setManagementPairingCode(const String &pairingCode,
 }
 
 void WebUi::registerRoutes() {
+  server_.on("/api/authorization",HTTP_GET,[this](){
+    if(!settingsAuthorized())return;
+    server_.sendHeader("Cache-Control","no-store");
+    if(!authorization_){sendLogged(503,"application/json","{}");return;}
+    String body="{\"status\":\""+jsonEscape(authorization_->status())+"\",\"error\":\""+jsonEscape(authorization_->error())+
+      "\",\"user_code\":\""+jsonEscape(authorization_->userCode())+"\",\"expires_in\":"+String(authorization_->expiresIn())+"}";
+    sendLogged(200,"application/json",body);
+  });
+  server_.on("/api/authorization/start",HTTP_POST,[this](){
+    if(!settingsAuthorized())return;
+    server_.sendHeader("Cache-Control","no-store");
+    if(!authorization_ || server_.arg("csrf")!=authorization_->csrfToken() || authorization_->csrfToken().isEmpty()) {
+      sendLogged(403,"application/json","{\"error\":\"Invalid authorization request\"}");return;
+    }
+    sendLogged(authorization_->requestAuthorization()?202:409,"application/json","{}");
+  });
   server_.on("/api/logging",HTTP_POST,[this]() {
     if(!settingsAuthorized()) return;
     StaticJsonDocument<128> doc;
@@ -125,7 +142,7 @@ void WebUi::registerRoutes() {
   });
   server_.on("/logs",HTTP_GET,[this]() {
     if(!settingsAuthorized()) return;
-    sendLogged(200,"text/html",R"HTML(<!doctype html><meta name="viewport" content="width=device-width"><title>System logs</title>
+    sendLogged(200,"text/html",loggerBranding(R"HTML(<!doctype html><meta name="viewport" content="width=device-width"><title>System logs</title>
 <style>body{background:#09151e;color:#e8eef5;font:16px system-ui;max-width:1100px;margin:2rem auto;padding:1rem}a{color:#7dd3fc}pre{white-space:pre-wrap;overflow-wrap:anywhere}select,button{padding:.5rem;margin:.5rem}</style>
 <a href="/diagnostics">Diagnostics</a><h1>System logs</h1><p>Logger and Dash events. Times are logger receipt times; boot and uptime preserve device ordering. RAM buffers are lost on power loss.</p>
 <label>Source <select id="source"><option value="">All devices</option><option value="logger">Logger</option><option value="dash">Dash</option></select></label>
@@ -133,7 +150,7 @@ void WebUi::registerRoutes() {
 <button id="refresh">Refresh</button><button id="detail">Detailed HTTP logging (10 minutes)</button><p id="status"></p><pre id="events"></pre><h2>Files</h2><div id="files"></div>
 <script>let rows=[];function render(){events.textContent=rows.filter(e=>(!source.value||e.device.startsWith(source.value))&&(!severity.value||e.severity===severity.value)).map(e=>JSON.stringify(e)).join('\n')}
 async function load(){try{const [a,b]=await Promise.all([fetch('/api/system-events'),fetch('/api/log-files')]);if(!a.ok||!b.ok)throw Error('Log access failed');const d=await a.json();rows=d.events;document.getElementById('status').textContent=`SD ${d.sd_ready?'ready':'unavailable'} · ${d.pending} pending · ${d.dropped} dropped`;render();files.replaceChildren();for(const f of await b.json()){const p=document.createElement('p'),a=document.createElement('a');a.href='/system-log-download?name='+encodeURIComponent(f.name);a.textContent=f.name+' ('+f.size+' bytes)';p.append(a);files.append(p)}}catch(e){document.getElementById('status').textContent=e.message}}
-refresh.onclick=load;source.onchange=render;severity.onchange=render;detail.onclick=async()=>{const r=await fetch('/api/logging',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({detailed:true})});if(!r.ok){document.getElementById('status').textContent='Could not enable detailed logging';return}detail.textContent='Detailed HTTP logging enabled for 10 minutes';load()};load();</script>)HTML");
+refresh.onclick=load;source.onchange=render;severity.onchange=render;detail.onclick=async()=>{const r=await fetch('/api/logging',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({detailed:true})});if(!r.ok){document.getElementById('status').textContent='Could not enable detailed logging';return}detail.textContent='Detailed HTTP logging enabled for 10 minutes';load()};load();</script>)HTML"));
   });
   server_.on("/", HTTP_GET, [this]() { systemLog.add("http_get_dashboard"); handleIndex(); });
   server_.on("/diagnostics", HTTP_GET, [this]() { systemLog.add("http_get_diagnostics"); handleDiagnostics(); });
@@ -179,6 +196,7 @@ void WebUi::handleSettings() {
   if (!settingsAuthorized()) {
     return;
   }
+  server_.sendHeader("Cache-Control","no-store");
 
   const AppConfig::UploadConfig &upload = settings_->uploadConfig();
   const bool httpsUpload = upload.protocol == AppConfig::UploadConfig::Protocol::Https;
@@ -187,6 +205,16 @@ void WebUi::handleSettings() {
               ? R"rawliteral(<p class="hint">HTTPS through Cloudflare Access. Credentials may be compiled into the firmware or replaced below. Stored values are never returned by this page.</p>)rawliteral"
               : R"rawliteral(<p class="hint">MQTT credentials remain in the local secrets header and are never returned by this page.</p>)rawliteral";
   html += "<p>Protocol: <strong>" + String(httpsUpload ? "HTTPS" : "MQTT") + "</strong></p>";
+  if(httpsUpload && authorization_ && authorization_->supported()) {
+    html += "<h2>Device authorization</h2><p>Hardware identity: "+htmlEscape(authorization_->hardwareId())+"</p>";
+    html += "<p>Status: <strong id=\"authorizationStatus\">"+htmlEscape(authorization_->status())+"</strong></p>";
+    html += "<p id=\"authorizationError\">"+htmlEscape(authorization_->error())+"</p><p>Pairing code: <strong id=\"authorizationCode\">"+htmlEscape(authorization_->userCode())+"</strong></p><p id=\"authorizationExpiry\"></p>";
+    html += "<button type=\"button\" id=\"authorizeDevice\" data-csrf=\""+htmlEscape(authorization_->csrfToken())+"\">Connect / re-authorize device</button>";
+    html += R"rawliteral(<p class="hint">Approve the temporary code in your signed-in app account. This replaces invalid credentials without copying secrets or flashing firmware. Existing ownership must be confirmed in the app. Approval saves the credential and restarts the logger; buffered telemetry is retained.</p><script>
+    (()=>{const button=document.getElementById('authorizeDevice');
+    async function refreshAuthorization(){try{const r=await fetch('/api/authorization',{cache:'no-store'});if(!r.ok)return;const s=await r.json();document.getElementById('authorizationStatus').textContent=s.status.replaceAll('_',' ');document.getElementById('authorizationCode').textContent=s.user_code||'Not requested';document.getElementById('authorizationExpiry').textContent=s.user_code?'Code expires in '+s.expires_in+' seconds':'';document.getElementById('authorizationError').textContent=s.error||'';}catch{}}
+    button.onclick=async()=>{button.disabled=true;try{const r=await fetch('/api/authorization/start',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({csrf:button.dataset.csrf})});if(!r.ok)document.getElementById('authorizationError').textContent='Authorization request rejected';await refreshAuthorization();}catch{document.getElementById('authorizationError').textContent='Logger unavailable';}finally{button.disabled=false;}};setInterval(refreshAuthorization,2000);})();</script>)rawliteral";
+  }
   html += R"rawliteral(<label><input type="checkbox" name="enabled" value="1")rawliteral";
   if (settings_->liveUploadEnabled()) {
     html += " checked";
@@ -196,7 +224,7 @@ void WebUi::handleSettings() {
     html += " checked";
   }
   html += R"rawliteral(> Allow remote management</label><p class="hint">Optional. Pair and configure this logger from the ApexiLabs app. Live upload must remain enabled; disable this locally at any time to restore outbound-only operation.</p>)rawliteral";
-  if (settings_->remoteManagementEnabled() && !managementPairingCode_.isEmpty()) {
+  if ((!httpsUpload || !authorization_ || !authorization_->supported()) && settings_->remoteManagementEnabled() && !managementPairingCode_.isEmpty()) {
     html += "<p>Temporary pairing code: <strong class=\"pairing-code\">" +
             htmlEscape(managementPairingCode_) + "</strong></p>";
     html += "<p class=\"hint\">Enter only this code in the ApexiLabs app. The app identifies this logger automatically. "
@@ -233,7 +261,7 @@ void WebUi::handleSettings() {
   html += R"rawliteral("></label><p class="hint">POSIX format examples: Perth <code>AWST-8</code>, UTC <code>UTC0</code>, Sydney <code>AEST-10AEDT,M10.1.0,M4.1.0/3</code>.</p><label>Timezone label<input name="tz_label" required maxlength="31" value=")rawliteral";
   html += htmlEscape(settings_->timeZoneLabel());
   html += R"rawliteral("></label><button type="submit">Save and restart</button></form><p><a href="/">Back to status</a></p></body></html>)rawliteral";
-  sendLogged(200, "text/html", html);
+  sendLogged(200, "text/html", loggerBranding(html));
 }
 
 void WebUi::handleSettingsSave() {
@@ -394,6 +422,11 @@ String WebUi::liveJson() const {
   json += "\"battery_state\":\"" + jsonEscape(state_.system.batteryState) + "\",";
   json += "\"upload_session_id\":\"" + state_.system.uploadSessionId + "\",";
   json += "\"upload_sequence\":" + String(state_.system.lastUploadSequence) + ",";
+  json += "\"upload_http_status\":" + String(state_.system.lastUploadHttpStatus) + ",";
+  const auto &perf=state_.system.uploadPerformance;
+  json += "\"upload_performance\":{\"captured\":"+String(perf.captured)+",\"accepted\":"+String(perf.accepted)+",\"capture_rejected\":"+String(perf.captureRejected)+",\"requests\":"+String(perf.requests)+",\"reused\":"+String(perf.reused)+",\"last_request_ms\":"+String(perf.lastRequestMs)+",\"last_sample_epoch\":"+(perf.lastSampleEpoch?String(perf.lastSampleEpoch):String("null"))+",\"batch_enabled\":"+String(perf.batchEnabled?"true":"false")+",\"batch_requests\":"+String(perf.batchRequests)+",\"batch_accepted\":"+String(perf.batchAccepted)+"},";
+  json += "\"upload_evidence_state\":" + String(state_.system.uploadEvidenceState) + ",";
+  json += "\"upload_success_age_ms\":" + (state_.system.uploadSuccessAgeMs==UINT32_MAX?String("null"):String(state_.system.uploadSuccessAgeMs)) + ",";
   json += "\"remote_management_enabled\":" +
           String(state_.system.remoteManagementEnabled ? "true" : "false") + ",";
   json += "\"applied_config_version\":" +
@@ -503,6 +536,13 @@ String WebUi::indexHtml() const {
   <script>
     let csvFilesEnabled = false;
 
+    function normalUploadQueue(system) {
+      return system.upload_enabled && system.upload_connected && system.store_forward_ready &&
+        Number.isInteger(system.store_forward_pending_records) && system.store_forward_pending_records >= 0 && system.store_forward_pending_records <= 2 &&
+        Number.isFinite(system.upload_success_age_ms) && system.upload_success_age_ms >= 0 && system.upload_success_age_ms <= 10000 &&
+        /^Replaying onboard queue: \d+ pending$/.test(system.last_upload_error || '');
+    }
+
     function setState(id, text, tone) {
       const target = document.getElementById(id);
       target.textContent = text;
@@ -514,7 +554,7 @@ String WebUi::indexHtml() const {
       const data = await response.json();
       document.getElementById('stamp').textContent = data.timestamp + ' ' + data.system.time_zone + ' | uptime ' + data.uptime;
       data.sensors.forEach((sensor) => {
-        document.getElementById('sensor-value-' + sensor.id).textContent = sensor.value.toFixed(1) + ' ' + sensor.units;
+        document.getElementById('sensor-value-' + sensor.id).textContent = sensor.value.toFixed(sensor.units === 'bar' ? 2 : 1) + ' ' + sensor.units;
         document.getElementById('sensor-loop-' + sensor.id).textContent = sensor.loop_mA.toFixed(2) + ' mA';
         const fault = document.getElementById('sensor-fault-' + sensor.id);
         fault.textContent = sensor.fault === 'none' ? 'OK' : sensor.fault.toUpperCase();
@@ -528,7 +568,7 @@ String WebUi::indexHtml() const {
       if (data.system.sd_enabled && !data.system.sd_ready) issues.push('Logging: ' + (data.system.last_log_error || 'microSD is not ready'));
       else if (data.system.sd_enabled && data.system.last_log_error) issues.push('Logging: ' + data.system.last_log_error);
       if (data.system.upload_enabled && !data.system.upload_connected) issues.push('Upload: ' + (data.system.last_upload_error || 'upstream server is not connected'));
-      else if (data.system.last_upload_error) issues.push('Upload: ' + data.system.last_upload_error);
+      else if (data.system.last_upload_error && !normalUploadQueue(data.system)) issues.push('Upload: ' + data.system.last_upload_error);
       if (data.system.remote_management_error) issues.push('Remote management: ' + data.system.remote_management_error);
       if (data.system.store_forward_enabled && !data.system.store_forward_ready) issues.push('Queue: ' + (data.system.store_forward_error || 'not ready'));
       else if (data.system.store_forward_error) issues.push('Queue: ' + data.system.store_forward_error);
@@ -599,11 +639,11 @@ String WebUi::indexHtml() const {
 </html>
 )rawliteral";
 
-  return htmlStart + sensorCardsHtml() + htmlEnd;
+  return loggerBranding(htmlStart + sensorCardsHtml() + htmlEnd);
 }
 
 String WebUi::diagnosticsHtml() const {
-  return R"rawliteral(
+  return loggerBranding(R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -678,5 +718,5 @@ String WebUi::diagnosticsHtml() const {
     refreshSafely(); setInterval(refreshSafely,1000);
   </script>
 </body></html>
-)rawliteral";
+)rawliteral");
 }

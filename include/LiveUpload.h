@@ -14,6 +14,10 @@
 #include "RemoteConfig.h"
 #include "StoreForwardQueue.h"
 #include "Types.h"
+#include "UploadEvidence.h"
+#include "HttpsWorker.h"
+#include "HttpsPacing.h"
+class LoggerAuthorization;
 
 class LiveUpload {
  public:
@@ -28,6 +32,8 @@ class LiveUpload {
   bool publishIfDue(const AppState &state);
 
   bool isEnabled() const;
+  void setAuthorization(LoggerAuthorization &authorization){authorization_=&authorization;}
+  UploadEvidence::Status uploadEvidence(uint32_t nowMs);
   bool isConnected();
   String protocolName() const;
   String serverName() const;
@@ -35,6 +41,7 @@ class LiveUpload {
   String lastError() const;
   uint32_t lastSequence() const;
   int lastHttpStatus() const { return lastHttpStatus_; }
+  UploadPerformance performance() const {return performance_;}
   bool storeForwardEnabled() const;
   bool storeForwardReady() const;
   uint32_t storeForwardPendingRecords() const;
@@ -55,6 +62,21 @@ class LiveUpload {
   void acknowledgeRemoteConfig(uint32_t version);
 
  private:
+#if defined(ESP32)
+  enum class Operation { None, Status, Fallback, Snapshot, Batch };
+  void serviceHttps(uint32_t now);
+  bool captureHttps(const AppState &state);
+  bool submitHttps(Operation operation,const String &payload);
+  Operation operation_=Operation::None;
+  HttpsPacing pacing_;
+  bool workerReady_=false,statusRequested_=true,fallbackRequested_=false,backoff_=false,durableInFlight_=false;
+  uint32_t completedMs_=0;
+  String inFlightPayload_,volatilePayload_;
+  std::vector<String> batchRecords_;
+  String batchId_,batchPayload_;
+  bool batchEnabled_=false,batchAcknowledged_=false;
+  size_t batchAckIndex_=0;
+#endif
   bool reconnect(uint32_t nowMs);
   void publishOfflineStatusAndDisconnect();
   bool publishStatus(bool connected);
@@ -83,6 +105,9 @@ class LiveUpload {
 #endif
   AppConfig::UploadConfig config_{};
   bool enabled_ = false;
+  UploadEvidence::Tracker uploadEvidence_;
+  UploadPerformance performance_;
+  LoggerAuthorization *authorization_=nullptr;
   bool remoteManagementEnabled_ = false;
   uint32_t lastPublishMs_ = 0;
   uint32_t lastReconnectAttemptMs_ = 0;
@@ -94,6 +119,7 @@ class LiveUpload {
   String sessionId_;
   String clientId_;
   String lastError_;
+  String lastHttpError_;
   String pairingCode_;
   uint32_t pairingCodeGeneratedMs_ = 0;
   String managementStatus_ = "ready";

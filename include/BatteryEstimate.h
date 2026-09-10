@@ -3,6 +3,9 @@
 #include <cstdint>
 
 namespace BatteryEstimate {
+inline float calibratedVoltage(float voltage, float gain) {
+  return voltage * gain;
+}
 // Approximate resting-voltage curve for a conventional 1S 4.2V LiPo.
 inline int percent(float v) {
   if (!std::isfinite(v) || v < 2.5f || v > 4.35f) return -1;

@@ -42,6 +42,7 @@ DashLink dashLink;
 BatteryMonitor batteryMonitor;
 WebUi webUi;
 LiveUpload liveUpload;
+LoggerAuthorization loggerAuthorization;
 RuntimeSettings runtimeSettings;
 RemoteLogs remoteLogs;
 
@@ -157,6 +158,11 @@ AppState buildState() {
   state.system.uploadSessionId = liveUpload.sessionId();
   state.system.lastUploadError = liveUpload.lastError();
   state.system.lastUploadSequence = liveUpload.lastSequence();
+  state.system.lastUploadHttpStatus=liveUpload.lastHttpStatus();
+  state.system.uploadPerformance=liveUpload.performance();
+  const auto uploadEvidence=liveUpload.uploadEvidence(millis());
+  state.system.uploadEvidenceState=uploadEvidence.state;
+  state.system.uploadSuccessAgeMs=uploadEvidence.ageMs;
   state.system.remoteManagementEnabled = runtimeSettings.remoteManagementEnabled();
   state.system.appliedConfigVersion = runtimeSettings.appliedConfigVersion();
   state.system.remoteManagementStatus = liveUpload.managementStatus();
@@ -296,7 +302,10 @@ void setup() {
 
   runtimeSettings.begin(AppConfig::kLiveUpload, AppConfig::kFeatures.liveUploadEnabled);
   wifiReady = webUi.begin(AppConfig::kWifi, csvLogger, runtimeSettings);
-  liveUpload.begin(runtimeSettings.uploadConfig(),
+  loggerAuthorization.begin(runtimeSettings.uploadConfig());
+  webUi.setAuthorization(loggerAuthorization);
+  liveUpload.setAuthorization(loggerAuthorization);
+  liveUpload.begin(loggerAuthorization.uploadConfig(),
                    runtimeSettings.liveUploadEnabled(),
                    runtimeSettings.remoteManagementEnabled(),
                    runtimeSettings.appliedConfigVersion());
@@ -349,14 +358,19 @@ void setup() {
 
   sampleSensors();
   batteryMonitor.begin();
-  systemLog.begin(timekeeper,runtimeSettings.uploadConfig().deviceId);
-  remoteLogs.begin(runtimeSettings.uploadConfig());
+  systemLog.begin(timekeeper,loggerAuthorization.uploadConfig().deviceId);
+  remoteLogs.begin(loggerAuthorization.uploadConfig());
   const AppState initialState = buildState();
   dashboard.render(initialState);
   webUi.publishState(initialState);
 }
 
 void loop() {
+  loggerAuthorization.loop();
+  if(loggerAuthorization.restartRequired()) {
+    static uint32_t authorizedMs=millis();
+    if(uint32_t(millis()-authorizedMs)>1500)ESP.restart();
+  }
   remoteLogs.loop(runtimeSettings.remoteManagementEnabled() && runtimeSettings.liveUploadEnabled());
   systemLog.loop(timekeeper,csvLogger.isReady());
   static uint32_t lastHealthMs=0;
@@ -426,6 +440,8 @@ void loop() {
   std::array<SensorSnapshot, AppConfig::kSensorCount> dashSamples{};
   for (size_t i = 0; i < sensorChannels.size(); ++i) dashSamples[i] = sensorChannels[i].snapshot();
   dashLink.publish(dashSamples, nowMs);
+  const uint32_t uploadStatusMs=millis();
+  dashLink.publishUploadStatus(liveUpload.uploadEvidence(uploadStatusMs),uploadStatusMs);
 
   if ((nowMs - lastLogMs) >= AppConfig::kTiming.loggingIntervalMs) {
     AppState state = buildState();

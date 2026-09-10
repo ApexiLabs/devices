@@ -1,6 +1,14 @@
 # Apexi Logger and Apexi Dash
 
+Logger Dashboard, Diagnostics, Settings and System logs share the app's ApexiLabs mark and wordmark. The embedded logo works offline; Inter uses the app's Google Fonts stylesheet with a system-font fallback.
+
 The dashboard CSV list displays file sizes in decimal MB to two decimal places.
+Logger web sensor readings use two decimal places for pressure in bar and one for other units; this changes presentation only, not logged data or sensor accuracy.
+Logger-to-Dash upload status reports snapshot acceptance separately from connection state: verified app acknowledgement for HTTPS, unconfirmed transport writes for MQTT. Older Dash firmware remains compatible.
+TinyC6 store-and-forward uses the existing default `spiffs`-labelled partition as LittleFS; only wholly erased partitions are initialized automatically. Existing unmountable data is preserved. Upload diagnostics retain the HTTP status and server-acceptance age. The dashboard does not flag a healthy, recently acknowledged queue of up to two records as a fault; diagnostics still show the queue.
+Owner-approved ESP32 credential provisioning and recovery are under coordinated implementation; see [device authorization](docs/device-authorization.md) for the draft contract and release gates.
+
+ESP32 HTTPS capture/replay now uses a shared background worker and reusable same-origin connections; see [HTTPS replay](docs/https-replay.md) for queue ownership, throughput measurements and remaining batch-ingest work. ESP8266 remains synchronous.
 
 System events are stored separately from sensor CSVs, with Dash forwarding,
 an authenticated local viewer, and optional ESP32 HTTPS remote downloads.
@@ -67,6 +75,8 @@ Primary source files:
 
 ### Waveshare dash firmware
 
+Dash uses the app's ApexiLabs mark and Inter font (Google Fonts, with a system fallback offline). Header navigation opens the dedicated authenticated Settings view for LCD readings, refresh interval, colours, and alarms. Header time is explicitly browser time and zone, beside device uptime. Battery, OTA, and log-retention notes use expandable help tooltips; firmware updates occupy one grid column. Download human-readable, uptime-stamped troubleshooting records from `/api/diagnostics.log`; the JSON `/api/diagnostics` remains available for tools.
+
 The small LCD prioritises one or two large readings. Hide either display slot for a single centred value; keep both active for two stacked values. Buffered rendering skips unchanged frames to avoid erase/redraw flicker. Sensor selection and refresh timing remain in the Dash web UI.
 
 The gauge-inspired black face uses fixed-size, highlighted arcs that fade blue → green → yellow → red through per-sensor colour points. Fresh readings are white; stale/held values stay amber with muted arcs. Optional low/high thresholds produce a red alarm band only when fresh, valid readings breach an enabled limit. Configure colour points and alarm limits in Dash `/settings`; alarms start disabled. See [gauge configuration](docs/hardware-setup.md#configurable-gauge-colours-and-alarms).
@@ -77,6 +87,12 @@ The preview keeps only its live capture status and controls; sensor timing is su
 
 Temperature readings are displayed as °C; the transport and saved-rule unit remains `C` for compatibility.
 Gauge numerals use a slight italic slant with larger, upright units for readability on the 240-pixel display.
+The coloured arcs extend to the screen edge without a separate outer border ring.
+An active low/high alarm overrides only that sensor's arc and label to red; clearing the alarm restores its configured colour gradient.
+Each arc is one solid band without an inset highlight seam. Dash pressure readings in bar use two decimals on the LCD and web UI, including held readings; temperature retains one decimal.
+Dash's web UI also includes a Logger-style Battery & power card for its own 1S LiPo: GPIO1 voltage, approximate percentage and voltage trend. Unsupported USB power and charging rows are omitted. This is independent of Logger battery telemetry.
+The small right-hand status dot reports Logger telemetry upload evidence: green for server-accepted snapshots, amber for unconfirmed MQTT sends, red for failed upload, grey for disabled/unknown/stale status. The web UI provides matching text. Both Logger and Dash need the optional upload-status protocol; see hardware setup for acknowledgement and freshness limits.
+USB diagnostics identified a status-API stack overflow in the initial gauge build; the current diagnostic variant moves its JSON workspace to the heap. See the hardware setup notes for the bench results and remaining qualification.
 
 Dash troubleshooting logging is enabled in RAM. Use **Dash Link → Download troubleshooting log** before reboot/OTA to save receive counters, sample gaps, and the latest 64 state transitions. See [diagnostic interpretation](docs/hardware-setup.md#dash-troubleshooting-log).
 
@@ -119,7 +135,7 @@ The default clock configuration uses `pool.ntp.org`, `time.google.com`, POSIX ti
 
 Dashboard uptime is displayed as `DD:HH:mm:ss`. The live API retains numeric `uptime_ms` for compatibility and also exposes the formatted value as `uptime`.
 
-The ESP32 target uses the checked-in 16 MB partition table: two 2 MB OTA application slots plus an approximately 12 MB LittleFS partition. Store-and-forward is capped at 10 MB and split across two append-only segments; when capacity is exhausted, rotation drops the oldest remaining segment and reports the drop count. Only failed HTTPS snapshots are written, limiting flash wear during normal connected operation. The NodeMCU target keeps its existing 4 MB layout and does not enable this queue.
+The ESP32 target uses the checked-in 16 MB partition table: two 2 MB OTA application slots plus an approximately 12 MB LittleFS partition. Store-and-forward is capped at 10 MB and split across two append-only segments; when capacity is exhausted, rotation drops the oldest remaining segment and reports the drop count. The asynchronous ESP32 path durably queues captures before upload, including when connected; flash endurance at the configured capture rate remains a production qualification requirement. The NodeMCU target keeps its existing 4 MB layout and does not enable this queue.
 
 Production brokers require authentication. Set `APEXI_MQTT_USERNAME` to the same normalized value as `kLiveUpload.deviceId`; the broker ACL uses that identity to limit the device to publishing `<topicPrefix>/<deviceId>/live` and `<topicPrefix>/<deviceId>/status`. When remote management is enabled, it may additionally read only its own `<topicPrefix>/<deviceId>/config/desired` topic. Keep the matching password in the encrypted infrastructure vault and never commit `AppSecrets.h`.
 
@@ -215,7 +231,7 @@ Example live payload shape:
 The checked-in default is station mode. Create the ignored `include/AppSecrets.h` from the example and provide a 2.4 GHz SSID/password; `fast_connect`-style BSSID/channel pinning is not used, so the ESP8266 performs a normal network scan. If station association times out, firmware falls back to the open 2.4 GHz SoftAP `MDA-LOGGER` at `http://192.168.44.1` on channel 6. Set `AppConfig::kWifi.apPassword` to an 8+ character WPA2 key if a closed fallback AP is required.
 - `/` compact phone-friendly sensor dashboard with a basic fault summary
 - `/diagnostics` detailed connectivity, hardware, storage, transport, and sensor diagnostics, including Apexi Dash Bluetooth connection and link status. The upstream endpoint row displays only the server hostname; settings and `upload_server` retain the full endpoint. TinyC6 builds enable CSV logging to the stacked RTC Logger Shield microSD card (CS GPIO18).
-- `/api/live` current readings and system state as JSON, including TinyC6 battery voltage, estimated 1S LiPo percentage, USB/5V presence and voltage trend. Battery diagnostics are estimates, not a fuel gauge or definitive charging/completion status; see [hardware setup](docs/hardware-setup.md).
+- `/api/live` current readings and system state as JSON, including TinyC6 battery voltage with configurable calibration gain, estimated 1S LiPo percentage, USB/5V presence and voltage trend. Battery diagnostics are estimates, not a fuel gauge or definitive charging/completion status; see [hardware setup](docs/hardware-setup.md).
 - `/api/files` available CSV files on the SD card
 - `/download/<file>` fetch a CSV log file
 

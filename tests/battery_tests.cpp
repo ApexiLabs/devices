@@ -4,6 +4,11 @@
 #include <limits>
 int main() {
   using namespace BatteryEstimate;
+  const float corrected=calibratedVoltage(4.050f,4.160f/4.050f);
+  assert(std::fabs(corrected-4.160f)<0.00001f);
+  assert(percent(corrected)==96);
+  assert(calibratedVoltage(4.050f,1.0f)==4.050f);
+  assert(calibratedVoltage(0,4.160f/4.050f)==0);
   assert(percent(0)==-1 && percent(4.5f)==-1);
   assert(percent(std::numeric_limits<float>::quiet_NaN())==-1);
   assert(percent(3.3f)==0 && percent(4.2f)==100 && percent(3.85f)==50);

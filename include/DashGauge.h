@@ -59,4 +59,8 @@ inline uint16_t colour(const Rule *r,float value,bool freshValid){
   unsigned channels[3];for(unsigned c=0;c<3;++c)channels[c]=unsigned(colours[segment][c]+(float(colours[segment+1][c])-colours[segment][c])*t+0.5f);
   return rgb(channels[0],channels[1],channels[2]);
 }
+// Alarm colour takes precedence over the configured engineering-value gradient.
+inline uint16_t arcColour(const Rule *r,float value,bool freshValid){
+  return alarm(r,value,freshValid)!=Alarm::None?rgb(255,0,0):colour(r,value,freshValid);
+}
 }

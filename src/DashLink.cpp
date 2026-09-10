@@ -2,6 +2,7 @@
 #include "SystemLog.h"
 
 #include "DashLinkProtocol.h"
+#include "DashUploadStatus.h"
 
 #if defined(ESP32)
 #include <BLEDevice.h>
@@ -129,6 +130,7 @@ void DashLink::finishScan() {
 
   status_ = "connecting";
   telemetry_ = nullptr;
+  uploadStatus_ = nullptr;
   if (!client_->connectTimeout(&dash, 2000)) {
     status_ = "connect failed";
     scan->clearResults();
@@ -152,6 +154,8 @@ void DashLink::finishScan() {
 
   connected_ = true;
   telemetry_ = service->getCharacteristic(DashTelemetry::kUuid);
+  uploadStatus_ = service->getCharacteristic(DashUploadStatus::kUuid);
+  lastUploadStatusMs_ = millis()-DashUploadStatus::kPublishMs;
   events_ = service->getCharacteristic(SystemEvents::kUuid);
   portENTER_CRITICAL(&eventMux_); eventReady_=false; eventReceiver_={}; portEXIT_CRITICAL(&eventMux_);
   if(events_ && events_->canNotify()) events_->registerForNotify(onEvent);
@@ -170,6 +174,18 @@ void DashLink::onEvent(BLERemoteCharacteristic *,uint8_t *data,size_t length,boo
   portEXIT_CRITICAL(&self.eventMux_);
 }
 #endif
+
+void DashLink::publishUploadStatus(const UploadEvidence::Status &status,uint32_t nowMs) {
+#if defined(ESP32)
+  if(!connected_ || !client_ || !client_->isConnected() || !uploadStatus_ ||
+      !uploadStatus_->canWriteNoResponse() || uint32_t(nowMs-lastUploadStatusMs_)<DashUploadStatus::kPublishMs) return;
+  lastUploadStatusMs_=nowMs;
+  const auto frame=DashUploadStatus::encode(status.state,status.transport,status.ageMs,status.intervalMs);
+  uploadStatus_->writeValue(const_cast<uint8_t *>(frame.data()),frame.size(),false);
+#else
+  (void)status; (void)nowMs;
+#endif
+}
 
 void DashLink::publish(const std::array<SensorSnapshot, AppConfig::kSensorCount> &sensors,
                        uint32_t nowMs) {

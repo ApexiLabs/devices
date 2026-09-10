@@ -12,6 +12,7 @@ using LoggerWebServer = WebServer;
 #include "CsvLogger.h"
 #include "RuntimeSettings.h"
 #include "Types.h"
+#include "LoggerAuthorization.h"
 
 class WebUi {
  public:
@@ -24,6 +25,7 @@ class WebUi {
   String modeString() const;
   String ipAddress() const;
   void setManagementPairingCode(const String &pairingCode, uint32_t expiresInSeconds);
+  void setAuthorization(LoggerAuthorization &authorization){authorization_=&authorization;}
 
  private:
   void registerRoutes();
@@ -47,6 +49,7 @@ class WebUi {
   LoggerWebServer server_{80};
   CsvLogger *logger_ = nullptr;
   RuntimeSettings *settings_ = nullptr;
+  LoggerAuthorization *authorization_ = nullptr;
   AppState state_{};
   bool ready_ = false;
   String mode_;

@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <stdint.h>
+#include <stdio.h>
 namespace DashDiagnostics {
 struct Event { uint32_t ms=0, ageMs=0; uint8_t sensor=255, state=0; };
 struct Log {
@@ -23,5 +24,11 @@ template<class Sensor> uint8_t state(const Sensor &s,bool connected,uint32_t now
 inline const char *name(uint8_t state){
   constexpr const char *names[]={"no_sample","metadata_incomplete","disconnected","stale","sensor_fault","live"};
   return state<6?names[state]:"link";
+}
+// One physical line per event; only fixed names and numeric fields enter output.
+inline void formatEvent(char *out,size_t capacity,const Event &e){
+  snprintf(out,capacity,"[%lu.%03lu] %s apexi-dash sensor_state sensor=%u state=%s sample_age_ms=%lu\n",
+    static_cast<unsigned long>(e.ms/1000),static_cast<unsigned long>(e.ms%1000),
+    e.state==5?"INFO":"WARN",e.sensor,name(e.state),static_cast<unsigned long>(e.ageMs));
 }
 }

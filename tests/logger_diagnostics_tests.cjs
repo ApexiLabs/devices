@@ -2,6 +2,31 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../src/WebUi.cpp'), 'utf8');
+const queuePolicy = source.match(/function normalUploadQueue\(system\) \{[\s\S]*?\n    \}/)[0];
+const issueBlock = source.slice(source.indexOf('const issues = [];'), source.indexOf('if (issues.length)'));
+const healthy = {adc_ready:true,upload_enabled:true,upload_connected:true,store_forward_enabled:true,store_forward_ready:true,store_forward_pending_records:2,upload_success_age_ms:500,last_upload_error:'Replaying onboard queue: 2 pending'};
+for (const [overrides, expected] of [
+  [{},0],
+  [{last_upload_error:'Replaying onboard queue: 3 pending'},0],
+  [{store_forward_pending_records:1,last_upload_error:'Replaying onboard queue: 1 pending'},0],
+  [{store_forward_pending_records:3,last_upload_error:'Replaying onboard queue: 3 pending'},1],
+  [{upload_connected:false},1],
+  [{upload_success_age_ms:10001},1],
+  [{upload_success_age_ms:null},1],
+  [{last_upload_error:'HTTPS request failed (401); queued data retained'},1],
+  [{store_forward_ready:false},2],
+  [{store_forward_error:'Queue persistence failed'},1],
+]) {
+  const sandbox={data:{sensors:[],system:{...healthy,...overrides}}};
+  vm.runInNewContext(queuePolicy+'\n'+issueBlock+'\nglobalThis.issueCount=issues.length;',sandbox);
+  assert.equal(sandbox.issueCount,expected,JSON.stringify(overrides));
+}
+const sensorValueExpression = source.match(/document\.getElementById\('sensor-value-' \+ sensor\.id\)\.textContent = [^;]+;/)[0];
+for (const [value, units, expected] of [[0, 'bar', '0.00 bar'], [0.126, 'bar', '0.13 bar'], [8, 'bar', '8.00 bar'], [21.16, 'C', '21.2 C']]) {
+  const node = {};
+  vm.runInNewContext(sensorValueExpression, {sensor:{id:'test',value,units},document:{getElementById:()=>node}});
+  assert.equal(node.textContent, expected);
+}
 const fileSizeExpression = source.match(/a\.textContent = file\.name \+[^;]+;/)[0];
 for (const [size, expected] of [[3516819, '3.52 MB'], [0, '0.00 MB'], [1000000, '1.00 MB']]) {
   const fileContext = {file:{name:'logs-20260908.csv',size},a:{}};

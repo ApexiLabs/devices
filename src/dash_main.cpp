@@ -16,6 +16,12 @@
 #include "DashWebUi.h"
 #include "DashTelemetry.h"
 #include "DashDisplayLayout.h"
+#include "DashUploadStatus.h"
+#include "DashBattery.h"
+
+#ifndef APEXI_DASH_BATTERY_VOLTAGE_GAIN
+#define APEXI_DASH_BATTERY_VOLTAGE_GAIN 1.0f
+#endif
 #include "DashLcdBitmap.h"
 #include "DashDiagnostics.h"
 #include "SystemEvents.h"
@@ -30,6 +36,12 @@ TFT_eSPI display;
 TFT_eSprite frame(&display);
 bool lcdBuffered = false;
 String lastFrameKey;
+DashBattery::Model dashBattery;
+void sampleDashBattery(){
+  if(!dashBattery.due(millis()))return;
+  uint32_t sum=0;for(unsigned i=0;i<8;++i)sum+=analogReadMilliVolts(DashBattery::kAdcPin);
+  dashBattery.update(sum/8.0f,APEXI_DASH_BATTERY_VOLTAGE_GAIN,millis());
+}
 uint32_t lcdFrameCount = 0;
 String lcdBootId;
 uint32_t lastLcdSnapshotMs = 0;
@@ -59,6 +71,8 @@ String csrfToken;
 uint32_t lastRenderMs = 0;
 portMUX_TYPE telemetryMux = portMUX_INITIALIZER_UNLOCKED;
 DashTelemetry::Model telemetry;
+DashUploadStatus::Model uploadStatus;
+DashUploadStatus::Model snapshotUpload(){portENTER_CRITICAL(&telemetryMux);auto copy=uploadStatus;portEXIT_CRITICAL(&telemetryMux);return copy;}
 struct ReceiveStats {
   uint32_t writes=0,accepted=0,rejected=0,connections=0,disconnects=0;
   uint32_t samples[8]{},lastSampleMs[8]{},maxGapMs[8]{};
@@ -128,6 +142,7 @@ bool validSlot(const char *id) {
 void clearTelemetry() {
   portENTER_CRITICAL(&telemetryMux);
   for(auto &s:telemetry.sensors){s.received=false;s.valid=false;}
+  uploadStatus=DashUploadStatus::Model{};
   portEXIT_CRITICAL(&telemetryMux);
 }
 DashTelemetry::Model snapshotTelemetry() {
@@ -190,6 +205,16 @@ class TelemetryCallbacks : public BLECharacteristicCallbacks {
     portEXIT_CRITICAL(&telemetryMux);
   }
 } telemetryCallbacks;
+class UploadCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *c) override {
+    const String value=c->getValue();DashUploadStatus::Frame f{};
+    if(value.length()!=f.size())return;
+    memcpy(f.data(),value.c_str(),f.size());const uint32_t now=millis();
+    portENTER_CRITICAL(&telemetryMux);
+    if(loggerReady)uploadStatus.accept(f,now);
+    portEXIT_CRITICAL(&telemetryMux);
+  }
+} uploadCallbacks;
 
 void pushFrame() { frame.pushSprite(0,0); ++lcdFrameCount; }
 
@@ -202,8 +227,10 @@ String fitCaption(String text,int width) {
 void renderStatus() {
   const bool ready=loggerReady, link=bleConnected;
   const auto readings=snapshotTelemetry();
+  const auto uploadReading=snapshotUpload();
   const uint32_t now=millis();
   lastRenderMs=now; renderedLoggerReady=ready; renderedBleConnected=link;
+  const auto upload=uploadReading.view(link&&ready,now);
   if (!lcdBuffered) return;
   String labels[2], values[2], details[2];
   uint16_t colours[2];
@@ -226,34 +253,32 @@ void renderStatus() {
       const bool fresh=s && s->fresh(link && ready,now);
       const bool valid=fresh && s->valid && s->fault==SensorFault::None;
       labels[count]=s ? s->name : "Waiting for sensor";
-      values[count]=valid ? String(s->value,1) : s && s->hasLastGood ? String(s->lastGoodValue,1) : String("--");
+      const unsigned decimals=DashDisplayLayout::decimals(s?s->units:nullptr);
+      values[count]=valid ? String(s->value,decimals) : s && s->hasLastGood ? String(s->lastGoodValue,decimals) : String("--");
       details[count]=valid ? String(s->units) : !s ? "No data" : !link || !ready ? "Disconnected" : !fresh ? "Stale" : "Sensor fault";
       const auto *rule=s?DashGauge::find(settings.gauges,s->id,s->units):nullptr;
       const auto alarm=DashGauge::alarm(rule,s?s->value:0,valid);
       colours[count]=!valid?TFT_ORANGE:alarm!=DashGauge::Alarm::None?TFT_RED:TFT_WHITE;
-      accents[count]=DashGauge::colour(rule,s?s->value:0,valid);
+      accents[count]=DashGauge::arcColour(rule,s?s->value:0,valid);
       key += "|"+labels[count]+"|"+values[count]+"|"+details[count]+"|"+String(colours[count])+"|"+String(accents[count]);
       ++count;
     }
   }
-  key+="|alarm:"+alarmLabel;
+  key+="|alarm:"+alarmLabel+"|upload:"+DashUploadStatus::name(upload);
   // Only visible changes require an LCD transfer; timestamps and polling do not.
   if (key==lastFrameKey) return;
   lastFrameKey=key;
   frame.fillSprite(TFT_BLACK);
   frame.setTextDatum(MC_DATUM); frame.setTextSize(1);
   if (count) {
-    // Fixed geometry: only the colour changes. A faint rim and stepped highlights
-    // borrow the reference's instrument styling without shrinking the numerals.
-    frame.drawCircle(120,120,118,0x03ef);
+    // Fixed geometry: colour changes, but the arcs always reach the screen edge.
     for (unsigned i=0;i<count;++i) {
       const auto layout=DashDisplayLayout::row(count,i);
       const unsigned start=count==1?40:i==0?102:282,end=count==1?320:i==0?258:360;
-      frame.drawSmoothArc(120,120,114,104,start,end,accents[i],TFT_BLACK,false);
-      if(count==2 && i==1)frame.drawSmoothArc(120,120,114,104,0,78,accents[i],TFT_BLACK,false);
-      const auto edge=DashGauge::highlight(accents[i]);
-      frame.drawSmoothArc(120,120,114,112,start,end,edge,TFT_BLACK,false);
-      if(count==2 && i==1)frame.drawSmoothArc(120,120,114,112,0,78,edge,TFT_BLACK,false);
+      constexpr int outer=DashDisplayLayout::arcOuterRadius,inner=DashDisplayLayout::arcInnerRadius;
+      frame.drawSmoothArc(120,120,outer,inner,start,end,accents[i],TFT_BLACK,false);
+      if(count==2 && i==1)frame.drawSmoothArc(120,120,outer,inner,0,78,accents[i],TFT_BLACK,false);
+      // One solid band: a second antialiased highlight creates a dark seam.
       frame.setTextSize(1); frame.setTextColor(accents[i],TFT_BLACK);
       frame.drawString(fitCaption(labels[i],DashDisplayLayout::labelWidth),120,layout.labelY,2);
       frame.setTextColor(colours[i],TFT_BLACK);
@@ -294,6 +319,10 @@ void renderStatus() {
     frame.drawFastHLine(120-halfWidth,y+10,halfWidth*2,TFT_RED);
     frame.setTextColor(TFT_WHITE,0x4000);frame.drawString(fitCaption("! "+alarmLabel,halfWidth*2-8),120,y,2);
   }
+  frame.fillCircle(DashDisplayLayout::uploadDotX,DashDisplayLayout::uploadDotY,
+      DashDisplayLayout::uploadDotBackingRadius,TFT_BLACK);
+  frame.fillCircle(DashDisplayLayout::uploadDotX,DashDisplayLayout::uploadDotY,
+      DashDisplayLayout::uploadDotRadius,DashUploadStatus::colour(upload));
   pushFrame();
 }
 
@@ -327,7 +356,7 @@ String statusJson() {
   json += ",\"settingsWritable\":";
   json += storageReady && otaEnabled ? "true" : "false";
   json += ",\"slots\":[\"" + String(settings.slots[0]) + "\",\"" + settings.slots[1] + "\"],\"sensors\":";
-  StaticJsonDocument<6144> sensorDoc;
+  DynamicJsonDocument sensorDoc(6144);
   auto array = sensorDoc.to<JsonArray>();
   const auto readings = snapshotTelemetry();
   for (size_t i=0;i<readings.count;++i) {
@@ -348,7 +377,22 @@ String statusJson() {
   serializeJson(array,json);
   json += ",\"gauges\":";
   sensorDoc.clear();auto gauges=sensorDoc.to<JsonArray>();DashGauge::toJson(gauges,settings.gauges);serializeJson(gauges,json);
-  json += "}";
+  const auto upload=snapshotUpload();const uint32_t uploadNow=millis();
+  const bool uploadLinked=bleConnected&&loggerReady;
+  json += ",\"upload\":{\"state\":\"";
+  json += DashUploadStatus::name(upload.view(uploadLinked,uploadNow));
+  json += "\",\"successAgeMs\":";
+  json += !uploadLinked||upload.age(uploadNow)==DashUploadStatus::kNever?String("null"):String(upload.age(uploadNow));
+  json += ",\"transport\":\"";
+  json += !uploadLinked?"unknown":upload.status.transport==DashUploadStatus::Transport::Https?"https":upload.status.transport==DashUploadStatus::Transport::Mqtt?"mqtt":"unknown";
+  json += "\"},\"battery\":{\"battery_supported\":true,\"battery_voltage\":";
+  const uint32_t batteryNow=millis();const bool batteryValid=dashBattery.fresh(batteryNow);
+  json += batteryValid?String(dashBattery.voltage,3):String("null");
+  json += ",\"battery_percent\":";
+  json += batteryValid?String(dashBattery.percent(batteryNow)):String("null");
+  json += ",\"external_power\":null,\"battery_state\":\"unknown\",\"battery_trend\":\"";
+  json += batteryValid?dashBattery.trend.value():"unavailable";
+  json += "\"}}";
   return json;
 }
 
@@ -392,7 +436,7 @@ void serviceWifi() {
 }
 
 void beginWebUi() {
-  webServer.on("/api/diagnostics",HTTP_GET,[](){
+  const auto diagnostics=[](){
     dashEvent("http_get_diagnostics");
     ReceiveStats stats; DashTelemetry::Model model;
     portENTER_CRITICAL(&telemetryMux);stats=receiveStats;model=telemetry;portEXIT_CRITICAL(&telemetryMux);
@@ -419,9 +463,31 @@ void beginWebUi() {
     for(unsigned i=0;i<diagnosticLog.size();++i){const auto e=diagnosticLog.at(i);auto o=events.createNestedObject();
       o["uptimeMs"]=e.ms;o["sensorIndex"]=e.sensor;o["state"]=DashDiagnostics::name(e.state);o["sampleAgeMs"]=e.ageMs;
     }
-    String body;serializeJson(doc,body);webServer.sendHeader("Cache-Control","no-store");
+    webServer.sendHeader("Cache-Control","no-store");
+    if(webServer.uri()=="/api/diagnostics.log"){
+      // Uptime is deliberate: Dash has no synchronised wall clock. Preserve the
+      // JSON endpoint and all counters while giving humans a line-oriented log.
+      String body; body.reserve(14000);
+      body="# ApexiLabs Dash troubleshooting log; timestamps are uptime seconds\n# RAM only: latest 64 sensor transitions; snapshot counters precede events\n";
+      const String prefix="["+String(now/1000)+"] INFO apexi-dash ";
+      auto fields=[&](JsonObjectConst object){String result;
+        for(JsonPairConst field:object){if(field.value().is<JsonArrayConst>())continue;
+          String value=field.value().as<String>();
+          value.replace("\r"," ");value.replace("\n"," ");value.replace("\t"," ");
+          result+=String(field.key().c_str())+"="+value+" ";
+        }return result;};
+      body+=prefix+"snapshot "+fields(doc.as<JsonObjectConst>())+"\n";
+      for(JsonObjectConst sensor:doc["sensors"].as<JsonArrayConst>())body+=prefix+"sensor "+fields(sensor)+"\n";
+      char line[180];
+      for(unsigned i=0;i<diagnosticLog.size();++i){DashDiagnostics::formatEvent(line,sizeof(line),diagnosticLog.at(i));body+=line;}
+      webServer.sendHeader("Content-Disposition","attachment; filename=\"dash-diagnostics.log\"");
+      webServer.send(200,"text/plain; charset=utf-8",body);return;
+    }
+    String body;serializeJson(doc,body);
     webServer.send(200,"application/json",body);
-  });
+  };
+  webServer.on("/api/diagnostics",HTTP_GET,diagnostics);
+  webServer.on("/api/diagnostics.log",HTTP_GET,diagnostics);
   const char *headers[]={"If-None-Match"};
   webServer.collectHeaders(headers,1);
   webServer.on("/api/lcd.bmp",HTTP_GET,[]() {
@@ -454,7 +520,9 @@ void beginWebUi() {
     static uint32_t count=0,last=0; ++count;
     if(uint32_t(millis()-last)>=60000) { dashEvent("http_status_poll_summary",count); count=0; last=millis(); }
     webServer.sendHeader("Cache-Control", "no-store");
+    Serial0.printf("TRACE status enter stack=%u heap=%u\n",uxTaskGetStackHighWaterMark(nullptr),ESP.getFreeHeap());
     webServer.send(200, "application/json", statusJson());
+    Serial0.printf("TRACE status done stack=%u heap=%u\n",uxTaskGetStackHighWaterMark(nullptr),ESP.getFreeHeap());
   });
   webServer.on("/settings",HTTP_GET,[]() {
     if (!otaEnabled) { webServer.send(403,"text/plain","Configure an OTA password to enable settings"); return; }
@@ -554,6 +622,9 @@ void beginBle() {
   auto *telemetryCharacteristic = service->createCharacteristic(DashTelemetry::kUuid,
       BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
   telemetryCharacteristic->setCallbacks(&telemetryCallbacks);
+  auto *uploadCharacteristic=service->createCharacteristic(DashUploadStatus::kUuid,
+      BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR);
+  uploadCharacteristic->setCallbacks(&uploadCallbacks);
   eventCharacteristic=service->createCharacteristic(SystemEvents::kUuid,
       BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR | BLECharacteristic::PROPERTY_NOTIFY);
   eventCharacteristic->addDescriptor(new BLE2902());
@@ -570,6 +641,9 @@ void beginBle() {
 
 void setup() {
   Serial0.begin(115200);
+  pinMode(DashBattery::kAdcPin,INPUT);
+  analogSetPinAttenuation(DashBattery::kAdcPin,ADC_11db);
+  sampleDashBattery();
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, TFT_BACKLIGHT_ON);
   display.begin();
@@ -614,6 +688,7 @@ void setup() {
 }
 
 void loop() {
+  sampleDashBattery();
   serviceSystemEvents();
   const uint32_t loopNow=millis();
   if(lastLoopMs)maxLoopGapMs=std::max(maxLoopGapMs,uint32_t(loopNow-lastLoopMs));

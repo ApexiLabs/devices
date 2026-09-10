@@ -47,6 +47,11 @@
 #ifndef APEXI_FIRMWARE_VERSION
 #define APEXI_FIRMWARE_VERSION "dev"
 #endif
+// Bench TinyC6: simultaneous meter 4.160 V / displayed 4.050 V.
+// Override per board; 1.0f disables this one-point gain correction.
+#ifndef APEXI_BATTERY_VOLTAGE_GAIN
+#define APEXI_BATTERY_VOLTAGE_GAIN (4.160f / 4.050f)
+#endif
 
 namespace AppConfig {
 
@@ -267,7 +272,11 @@ inline constexpr UploadConfig kLiveUpload{
     APEXI_HTTPS_PATH,
     APEXI_CF_ACCESS_CLIENT_ID,
     APEXI_CF_ACCESS_CLIENT_SECRET,
+#if defined(ESP32)
+    "", // Owner-approved app credentials belong in persistent device storage.
+#else
     APEXI_APP_DEVICE_TOKEN,
+#endif
 };
 
 inline constexpr DashLinkConfig kDashLink{

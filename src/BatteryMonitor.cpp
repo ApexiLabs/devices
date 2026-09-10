@@ -1,4 +1,5 @@
 #include "BatteryMonitor.h"
+#include "AppConfig.h"
 #include <cstring>
 
 bool BatteryMonitor::supported() const {
@@ -23,7 +24,8 @@ void BatteryMonitor::loop(uint32_t now) {
   uint32_t millivolts=0;
   for(unsigned i=0;i<8;++i) millivolts+=analogReadMilliVolts(VBAT_SENSE);
   // TinyC6 P1 schematic: R6=442k, R7=160k. Use calibrated ADC mV.
-  const float raw=millivolts/8000.0f*((442.0f+160.0f)/160.0f);
+  const float raw=BatteryEstimate::calibratedVoltage(
+      millivolts/8000.0f*((442.0f+160.0f)/160.0f), APEXI_BATTERY_VOLTAGE_GAIN);
   const bool valid=BatteryEstimate::percent(raw)>=0;
   voltage_=valid && valid_ && external==external_ ? voltage_+0.2f*(raw-voltage_) : raw;
   valid_=valid; external_=external; sampled_=true; lastSample_=now;

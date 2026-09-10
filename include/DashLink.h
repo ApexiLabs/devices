@@ -5,6 +5,7 @@
 #include "Types.h"
 #include "DashTelemetry.h"
 #include "SystemEvents.h"
+#include "UploadEvidence.h"
 
 #if defined(ESP32)
 class BLEClient;
@@ -16,6 +17,7 @@ class DashLink {
  public:
   void begin(const AppConfig::DashLinkConfig &config);
   void loop(uint32_t nowMs);
+  void publishUploadStatus(const UploadEvidence::Status &status,uint32_t nowMs);
   void publish(const std::array<SensorSnapshot, AppConfig::kSensorCount> &sensors, uint32_t nowMs);
 
   bool isEnabled() const;
@@ -44,6 +46,8 @@ class DashLink {
   BLEClient *client_ = nullptr;
   BLERemoteCharacteristic *telemetry_ = nullptr;
   BLERemoteCharacteristic *events_ = nullptr;
+  BLERemoteCharacteristic *uploadStatus_ = nullptr;
+  uint32_t lastUploadStatusMs_ = 0;
   uint32_t lastEventMs_ = 0;
   portMUX_TYPE eventMux_=portMUX_INITIALIZER_UNLOCKED;
   SystemEvents::Receiver eventReceiver_;

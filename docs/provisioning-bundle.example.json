@@ -1,0 +1,20 @@
+{
+  "expected_device_id": "mda-001122aabbcc",
+  "friendly_name": "Car 01 logger",
+  "hardware_revision": "esp32-wroom-32-r1",
+  "wifi": {
+    "ssid": "replace-me",
+    "password": "replace-with-unique-secret"
+  },
+  "ota_password": "replace-with-unique-secret",
+  "remote_management_enabled": false,
+  "upload": {
+    "protocol": "https",
+    "host": "app-dev.apexilabs.com",
+    "port": 443,
+    "cloudflare_client_id": "replace-me.access",
+    "cloudflare_client_secret": "replace-with-unique-secret",
+    "app_device_token": "replace-with-device-scoped-token",
+    "app_token_subject": "logger:mda-001122aabbcc"
+  }
+}

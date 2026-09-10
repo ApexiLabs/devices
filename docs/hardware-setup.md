@@ -396,3 +396,9 @@ When using receiver modules:
 4. Set the RTC to the correct time before field logging.
 5. Inject 4, 8, 12, 16, and 20 mA into each channel and verify the receiver modules and displayed engineering units match the configured ranges.
 6. Confirm the serial boot report shows `wifiReady=1`, station mode, and a DHCP address before installing the logger in the vehicle.
+
+## Production and provisioning boundaries
+
+The functional Logger/Dash development targets do not establish production qualification. Logger development builds support owner-approved app authorization and authenticated Settings; production candidates require identity-bound USB provisioning and the fail-closed secure-boot/encryption gate before networking. Legacy OTA remains disabled for production candidates. Existing USB-provisioned devices use their provisioned settings and bearer-rotation path; app-authorized devices use the persisted app credential path.
+
+See [device authorization](device-authorization.md), [USB provisioning](provisioning.md), [production security](production-security.md), [signed releases](releases.md), [queue recovery](store-forward-recovery.md), and [physical qualification](production-hardware-qualification.md). Remaining measured development limits and dated replay evidence are in [HTTPS replay](https-replay.md).

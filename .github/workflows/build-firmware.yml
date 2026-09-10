@@ -13,6 +13,9 @@ permissions:
 jobs:
   build-firmware:
     runs-on: ubuntu-latest
+    env:
+      PLATFORMIO_CORE_DIR: ${{ github.workspace }}/.platformio
+      PLATFORMIO_SETTING_ENABLE_TELEMETRY: "no"
 
     steps:
       - name: Check out repository
@@ -27,15 +30,21 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.platformio/.cache
-            ~/.platformio/packages
-            ~/.platformio/platforms
+            .platformio/.cache
+            .platformio/packages
+            .platformio/platforms
           key: ${{ runner.os }}-platformio-${{ hashFiles('platformio.ini') }}
           restore-keys: |
             ${{ runner.os }}-platformio-
 
       - name: Install PlatformIO Core
-        run: pip install platformio intelhex
+        run: pip install platformio intelhex "rich-click<2" "click<9"
+
+      - name: Verify public-key release evidence tooling
+        run: |
+          python -m venv .verification-venv
+          .verification-venv/bin/pip install -r requirements-production-verification.txt
+          .verification-venv/bin/python -m unittest tests/test_signed_release_crypto.py
 
       - name: Run full repo verification
         run: ./scripts/verify-repo.sh --full
@@ -44,7 +53,7 @@ jobs:
         run: |
           PLATFORMIO_CORE_DIR="$PWD/.platformio" \
             PLATFORMIO_SETTING_ENABLE_TELEMETRY=no \
-            pio run -e logger-nodemcuv2 -e logger-esp32 -e logger-tinyc6 -e dash-waveshare-s3-128
+            pio run -e logger-nodemcuv2 -e logger-esp32 -e logger-tinyc6 -e dash-waveshare-s3-128 -e logger-esp32-production-candidate
 
       - name: Verify gauge JSON integration with installed dependencies
         run: ./scripts/run-host-tests.sh
@@ -62,13 +71,12 @@ jobs:
           cp .pio/build/dash-waveshare-s3-128/firmware.bin dist/apexi-dash-waveshare-s3-128-firmware.bin
           cp .pio/build/dash-waveshare-s3-128/firmware.elf dist/apexi-dash-waveshare-s3-128-firmware.elf
           cp .pio/build/dash-waveshare-s3-128/firmware.factory.bin dist/apexi-dash-waveshare-s3-128-factory.bin
-          python .platformio/packages/tool-esptoolpy/esptool.py --chip esp32 merge_bin \
-            --output dist/apexi-logger-esp32-factory.bin \
-            --flash_mode dio --flash_freq 40m --flash_size 16MB \
-            0x1000 .pio/build/logger-esp32/bootloader.bin \
-            0x8000 .pio/build/logger-esp32/partitions.bin \
-            0xe000 .platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
-            0x10000 .pio/build/logger-esp32/firmware.bin
+          # Platform output uses the selected SDK's actual bootloader offsets.
+          cp .pio/build/logger-esp32/firmware.factory.bin dist/apexi-logger-esp32-factory.bin
+          python scripts/check_production_security.py \
+            .platformio/packages/framework-arduinoespressif32-libs/esp32/sdkconfig \
+            --build-flags '-D APEXI_PRODUCTION_SECURITY_REQUIRED=1' --json \
+            > dist/esp32-security-classification.json
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4

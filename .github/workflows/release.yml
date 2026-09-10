@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing SemVer tag to publish or verify (for example v0.2.1)
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -12,10 +17,32 @@ permissions:
 jobs:
   release-firmware:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      PLATFORMIO_CORE_DIR: ${{ github.workspace }}/.platformio
+      PLATFORMIO_SETTING_ENABLE_TELEMETRY: "no"
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Validate immutable release identity
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must match vMAJOR.MINOR.PATCH: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          tagged_commit="$(git rev-list -n 1 "$RELEASE_TAG")"
+          checked_out_commit="$(git rev-parse HEAD)"
+          if [[ -z "$tagged_commit" || "$tagged_commit" != "$checked_out_commit" ]]; then
+            echo "Checked-out commit does not match $RELEASE_TAG" >&2
+            exit 1
+          fi
+          echo "RELEASE_COMMIT=$checked_out_commit" >> "$GITHUB_ENV"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -26,21 +53,27 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.platformio/.cache
-            ~/.platformio/packages
-            ~/.platformio/platforms
+            .platformio/.cache
+            .platformio/packages
+            .platformio/platforms
           key: ${{ runner.os }}-platformio-${{ hashFiles('platformio.ini') }}
           restore-keys: |
             ${{ runner.os }}-platformio-
 
       - name: Install PlatformIO Core
-        run: pip install platformio intelhex
+        run: pip install platformio intelhex "rich-click<2" "click<9"
+
+      - name: Verify public-key release evidence tooling
+        run: |
+          python -m venv .verification-venv
+          .verification-venv/bin/pip install -r requirements-production-verification.txt
+          .verification-venv/bin/python -m unittest tests/test_signed_release_crypto.py
 
       - name: Run full repo verification
         run: ./scripts/verify-repo.sh --full
 
       - name: Build firmware images
-        run: pio run -e logger-nodemcuv2 -e logger-esp32 -e logger-tinyc6 -e dash-waveshare-s3-128
+        run: pio run -e logger-nodemcuv2 -e logger-esp32 -e logger-tinyc6 -e dash-waveshare-s3-128 -e logger-esp32-production-candidate
 
       - name: Prepare release assets
         run: |
@@ -55,17 +88,54 @@ jobs:
           cp .pio/build/dash-waveshare-s3-128/firmware.bin dist/apexi-dash-waveshare-s3-128-firmware.bin
           cp .pio/build/dash-waveshare-s3-128/firmware.elf dist/apexi-dash-waveshare-s3-128-firmware.elf
           cp .pio/build/dash-waveshare-s3-128/firmware.factory.bin dist/apexi-dash-waveshare-s3-128-factory.bin
-          python ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32 merge_bin \
-            --output dist/apexi-logger-esp32-factory.bin \
-            --flash_mode dio --flash_freq 40m --flash_size 16MB \
-            0x1000 .pio/build/logger-esp32/bootloader.bin \
-            0x8000 .pio/build/logger-esp32/partitions.bin \
-            0xe000 ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
-            0x10000 .pio/build/logger-esp32/firmware.bin
+          # Platform output uses the selected SDK's actual bootloader offsets.
+          cp .pio/build/logger-esp32/firmware.factory.bin dist/apexi-logger-esp32-factory.bin
+          python scripts/check_production_security.py \
+            .platformio/packages/framework-arduinoespressif32-libs/esp32/sdkconfig \
+            --build-flags '-D APEXI_PRODUCTION_SECURITY_REQUIRED=1' --json \
+            > dist/esp32-security-classification.json
+
+          jq --null-input \
+            --arg version "$RELEASE_TAG" \
+            --arg commit "$RELEASE_COMMIT" \
+            '{schema_version: 1, version: $version, commit_sha: $commit, release_security_profile: "development-only", security_classification: "esp32-security-classification.json", targets: [{"environment":"logger-nodemcuv2","production_supported":false,"flash_size":"4MB","partition_layout":"framework default","firmware":"apexi-logger-nodemcuv2-firmware.bin","elf":"apexi-logger-nodemcuv2-firmware.elf"},{"environment":"logger-esp32","production_supported":false,"flash_size":"16MB","partition_layout":"partitions/esp32-16mb-store-forward.csv","firmware":"apexi-logger-esp32-firmware.bin","elf":"apexi-logger-esp32-firmware.elf","factory_image":"apexi-logger-esp32-factory.bin"},{"environment":"logger-tinyc6","production_supported":false,"flash_size":"8MB","partition_layout":"framework default_8MB.csv","firmware":"apexi-logger-tinyc6-firmware.bin","elf":"apexi-logger-tinyc6-firmware.elf","factory_image":"apexi-logger-tinyc6-factory.bin"},{"environment":"dash-waveshare-s3-128","production_supported":false,"flash_size":"16MB","partition_layout":"framework default_8MB.csv","firmware":"apexi-dash-waveshare-s3-128-firmware.bin","elf":"apexi-dash-waveshare-s3-128-firmware.elf","factory_image":"apexi-dash-waveshare-s3-128-factory.bin"}]}' \
+            > dist/build-metadata.json
+          (
+            cd dist
+            sha256sum \
+              apexi-logger-nodemcuv2-firmware.bin \
+              apexi-logger-nodemcuv2-firmware.elf \
+              apexi-logger-esp32-firmware.bin \
+              apexi-logger-esp32-firmware.elf \
+              apexi-logger-esp32-factory.bin \
+              apexi-logger-tinyc6-firmware.bin \
+              apexi-logger-tinyc6-firmware.elf \
+              apexi-logger-tinyc6-factory.bin \
+              apexi-dash-waveshare-s3-128-firmware.bin \
+              apexi-dash-waveshare-s3-128-firmware.elf \
+              apexi-dash-waveshare-s3-128-factory.bin \
+              esp32-security-classification.json \
+              build-metadata.json \
+              > SHA256SUMS
+          )
+
+      - name: Verify prepared release assets
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum --check SHA256SUMS)
+          test "$(jq -r .version dist/build-metadata.json)" = "$RELEASE_TAG"
+          test "$(jq -r .commit_sha dist/build-metadata.json)" = "$RELEASE_COMMIT"
+          test "$(jq '.targets | length' dist/build-metadata.json)" -eq 4
+          test "$(jq -r .release_security_profile dist/build-metadata.json)" = "development-only"
+          test "$(jq -r .production_eligible dist/esp32-security-classification.json)" = "false"
+          test ! -e include/AppSecrets.h
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          fail_on_unmatched_files: true
+          overwrite_files: false
           files: |
             dist/apexi-logger-nodemcuv2-firmware.bin
             dist/apexi-logger-nodemcuv2-firmware.elf
@@ -78,3 +148,18 @@ jobs:
             dist/apexi-dash-waveshare-s3-128-firmware.bin
             dist/apexi-dash-waveshare-s3-128-firmware.elf
             dist/apexi-dash-waveshare-s3-128-factory.bin
+            dist/esp32-security-classification.json
+            dist/build-metadata.json
+            dist/SHA256SUMS
+
+      - name: Verify exact published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p published
+          gh release download "$RELEASE_TAG" --dir published
+          (cd published && sha256sum --check SHA256SUMS)
+          while IFS= read -r artifact; do
+            cmp "dist/$artifact" "published/$artifact"
+          done < <(awk '{print $2}' dist/SHA256SUMS)

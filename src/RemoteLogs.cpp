@@ -9,13 +9,16 @@
 #include <ArduinoJson.h>
 #include "LiveUpload.h"
 #include "SystemLog.h"
+#include "AppBearerRotation.h"
 void RemoteLogs::begin(const AppConfig::UploadConfig &config) {
+  ready_=false;
   config_=config;
   host_=config.mqttHost; path_=config.httpsPath; identity_=config.deviceId;
   accessId_=config.cloudflareAccessClientId; accessSecret_=config.cloudflareAccessClientSecret; token_=config.appDeviceToken;
   config_.mqttHost=host_.c_str(); config_.httpsPath=path_.c_str(); config_.deviceId=identity_.c_str();
   config_.cloudflareAccessClientId=accessId_.c_str(); config_.cloudflareAccessClientSecret=accessSecret_.c_str(); config_.appDeviceToken=token_.c_str();
-  if(config.protocol!=AppConfig::UploadConfig::Protocol::Https || token_.isEmpty()) return;
+  const char *bearer=bearerRotation_?bearerRotation_->activeBearer():token_.c_str();
+  if(config.protocol!=AppConfig::UploadConfig::Protocol::Https || !bearer || !bearer[0]) return;
   ready_=HttpsWorker::shared().begin(LiveUpload::trustRoot());
 }
 void RemoteLogs::loop(bool enabled) {
@@ -73,7 +76,11 @@ void RemoteLogs::loop(bool enabled) {
     StaticJsonDocument<256> out; out["device_id"]=config_.deviceId; out["enabled"]=true; serializeJson(out,request_);
   }
   const String url="https://"+host_+":"+String(config_.mqttPort)+path_+"/logs";
-  if(HttpsWorker::shared().submit(HttpsWorker::Owner::Logs,url.c_str(),request_.c_str(),token_.c_str(),accessId_.c_str(),accessSecret_.c_str())){
+  // Resolve at submission, not boot: rotation must not strand remote logs on
+  // a revoked bootstrap token. The shared worker copies this immutable request.
+  const char *bearer=bearerRotation_?bearerRotation_->activeBearer():token_.c_str();
+  if(!bearer || !bearer[0]){HttpsWorker::shared().cancelPending(HttpsWorker::Owner::Logs);return;}
+  if(HttpsWorker::shared().submit(HttpsWorker::Owner::Logs,url.c_str(),request_.c_str(),bearer,accessId_.c_str(),accessSecret_.c_str())){
     lastRequest_=millis();state_=1;
   }
 }

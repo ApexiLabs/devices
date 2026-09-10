@@ -5,7 +5,8 @@
 #include <cstring>
 
 bool RuntimeSettings::begin(const AppConfig::UploadConfig &defaults,
-                            const bool defaultUploadEnabled) {
+                            const bool defaultUploadEnabled,
+                            const bool defaultRemoteManagementEnabled) {
   defaults_ = defaults;
   EEPROM.begin(sizeof(Record));
 
@@ -20,7 +21,8 @@ bool RuntimeSettings::begin(const AppConfig::UploadConfig &defaults,
     EEPROM.get(0, version3);
     EEPROM.get(0, version4);
     EEPROM.get(0, legacy);
-    populateDefaults(record, defaults, defaultUploadEnabled);
+    populateDefaults(record, defaults, defaultUploadEnabled,
+                     defaultRemoteManagementEnabled);
     if (valid(version4)) {
       record.uploadEnabled = version4.uploadEnabled;
       record.remoteManagementEnabled = version4.remoteManagementEnabled;
@@ -135,6 +137,14 @@ bool RuntimeSettings::applyRemoteConfig(const RemoteConfig &config) {
   const String label = config.timeZoneLabel.isEmpty() ? String(timeZoneLabel_) : config.timeZoneLabel;
   return save(String(mqttHost_), uploadConfig_.mqttPort, uploadEnabled, primary, secondary,
               rule, label, true, config.version);
+}
+
+bool RuntimeSettings::factoryReset() {
+  EEPROM.begin(sizeof(Record));
+  for (size_t index = 0; index < sizeof(Record); ++index) {
+    EEPROM.write(index, 0xFF);
+  }
+  return EEPROM.commit();
 }
 
 const AppConfig::UploadConfig &RuntimeSettings::uploadConfig() const { return uploadConfig_; }
@@ -304,13 +314,14 @@ bool RuntimeSettings::validText(const String &value, const size_t capacity) {
 
 void RuntimeSettings::populateDefaults(Record &record,
                                        const AppConfig::UploadConfig &defaults,
-                                       const bool defaultUploadEnabled) {
+                                       const bool defaultUploadEnabled,
+                                       const bool defaultRemoteManagementEnabled) {
   record = {};
   record.magic = kMagic;
   record.version = kVersion;
   record.size = sizeof(Record);
   record.uploadEnabled = defaultUploadEnabled ? 1 : 0;
-  record.remoteManagementEnabled = 0;
+  record.remoteManagementEnabled = defaultRemoteManagementEnabled ? 1 : 0;
   record.uploadProtocol = static_cast<uint8_t>(defaults.protocol);
   record.mqttPort = defaults.mqttPort;
   record.appliedConfigVersion = 0;

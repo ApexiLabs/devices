@@ -30,6 +30,41 @@ String randomUuid() {
 #endif
 }
 
+bool LoggerAuthorization::ownerResetRecord(const String &saved, String &record) {
+  DynamicJsonDocument doc(4096);
+  if (deserializeJson(doc, saved)) return false;
+  const String hardware = doc["hardware_id"].as<String>();
+  const String installation = doc["installation_id"].as<String>();
+  const String secret = doc["installation_secret"].as<String>();
+  if (!DeviceAuthorizationPolicy::deviceId(hardware.c_str()) ||
+      !DeviceAuthorizationPolicy::uuid(installation.c_str()) ||
+      !DeviceAuthorizationPolicy::hex(secret.c_str(), 64)) return false;
+  // Keep installation identity; discard owner credentials and pending proofs.
+  DynamicJsonDocument identity(1024);
+  identity["hardware_id"] = hardware;
+  identity["installation_id"] = installation;
+  identity["installation_secret"] = secret;
+  record = "";
+  serializeJson(identity, record);
+  return true;
+}
+
+bool LoggerAuthorization::factoryReset() {
+#if defined(ESP32)
+  Preferences store;
+  if (!store.begin(kNamespace, false)) return false;
+  const String saved = store.getString("record", "");
+  if (saved.isEmpty()) { store.end(); return true; }
+  String record;
+  if (!ownerResetRecord(saved, record)) { store.end(); return false; }
+  const bool savedIdentity = store.putString("record", record) == record.length();
+  store.end();
+  return savedIdentity;
+#else
+  return true;
+#endif
+}
+
 bool LoggerAuthorization::begin(const AppConfig::UploadConfig &config) {
   config_=config;
   serverHost_=config.mqttHost;cloudflareId_=config.cloudflareAccessClientId;cloudflareSecret_=config.cloudflareAccessClientSecret;

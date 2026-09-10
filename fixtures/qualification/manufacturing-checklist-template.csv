@@ -1,0 +1,1 @@
+inspection_id,recorded_at_utc,operator,hardware_revision,assembly_serial,firmware_version,firmware_git_sha,firmware_sha256,check_id,check_category,check_description,measurement,units,lower_limit,upper_limit,result,evidence_reference,corrective_action,notes

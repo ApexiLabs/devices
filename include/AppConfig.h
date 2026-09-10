@@ -53,6 +53,10 @@
 #define APEXI_BATTERY_VOLTAGE_GAIN (4.160f / 4.050f)
 #endif
 
+#ifndef APEXI_PRODUCTION_SECURITY_REQUIRED
+#define APEXI_PRODUCTION_SECURITY_REQUIRED 0
+#endif
+
 namespace AppConfig {
 
 // DFRobot SEN0262 presents a 120 ohm sense path (0-25 mA -> 0-3 V).
@@ -102,6 +106,7 @@ struct WifiConfig {
   const char *stationSsid;
   const char *stationPassword;
   uint8_t connectTimeoutSeconds;
+  bool fallbackApEnabled;
 };
 
 struct FeatureConfig {
@@ -110,6 +115,7 @@ struct FeatureConfig {
   bool sdLoggingEnabled;
   bool liveUploadEnabled;
   bool otaUpdatesEnabled;
+  bool localSettingsEnabled;
 };
 
 struct OtaConfig {
@@ -240,6 +246,7 @@ inline constexpr WifiConfig kWifi{
     APEXI_WIFI_STATION_SSID,
     APEXI_WIFI_STATION_PASSWORD,
     30,
+    APEXI_PRODUCTION_SECURITY_REQUIRED == 0,
 };
 
 inline constexpr FeatureConfig kFeatures{
@@ -252,6 +259,7 @@ inline constexpr FeatureConfig kFeatures{
 #endif
     true,
     true,
+    APEXI_PRODUCTION_SECURITY_REQUIRED == 0,
 };
 
 inline constexpr OtaConfig kOta{

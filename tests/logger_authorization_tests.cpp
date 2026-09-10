@@ -4,6 +4,7 @@
 #include <cassert>
 #include <iostream>
 struct AuthorizationTestAccess {
+ static bool resetRecord(const String &saved,String &out){return LoggerAuthorization::ownerResetRecord(saved,out);}
  static void seed(LoggerAuthorization &a){
   a.hardwareId_="esp32-aabbccddeeff";a.installationId_="12345678-1234-4234-8234-123456789012";
   a.installationSecret_=std::string(64,'a');a.origin_=a.storedOrigin_="app.example.test:443";
@@ -37,6 +38,14 @@ int main(){
  AuthTestStore::fail=false;AuthorizationTestAccess::response(a,200,issued);
  assert(AuthorizationTestAccess::pendingAck(a));assert(record()["access_token"].as<String>()==std::string(40,'o'));
   assert(record()["bootstrap_token"].as<String>()==std::string(40,'n'));
+ String resetRecord;
+ assert(AuthorizationTestAccess::resetRecord(AuthTestStore::record,resetRecord));
+ StaticJsonDocument<1024> resetIdentity;assert(!deserializeJson(resetIdentity,resetRecord));
+ assert(resetIdentity.size()==3);
+ assert(resetIdentity["installation_id"].as<String>()=="12345678-1234-4234-8234-123456789012");
+ assert(!resetIdentity.containsKey("access_token")&&!resetIdentity.containsKey("bootstrap_token")&&!resetIdentity.containsKey("device_code"));
+ assert(!AuthorizationTestAccess::resetRecord("broken",resetRecord));
+ assert(!AuthorizationTestAccess::resetRecord("{}",resetRecord));
  LoggerAuthorization rebooted;AuthorizationTestAccess::seed(rebooted);assert(AuthorizationTestAccess::restore(rebooted));
  assert(AuthorizationTestAccess::pendingAck(rebooted));assert(String(rebooted.bearer())==std::string(40,'o'));
  assert(String(a.bearer())==std::string(40,'o'));

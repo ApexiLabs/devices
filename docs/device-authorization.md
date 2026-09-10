@@ -42,4 +42,10 @@ After a non-retryable rotation rejection, the logger checks the old bearer with 
 
 ## Verification and release gates
 
-Host tests cover durable writes/failures, candidate separation, record restoration, expiry, lost ACK, exact-identity verification, origin binding and rotation boundaries. TinyC6 builds cover the actual worker/NVS integration. Remaining gates: matching server/browser tests, owner-approved legacy migration, revoked-token recovery, automatic renewal with management off, physical power cuts, replay drain, and SD/BLE responsiveness during sustained transport. No successful end-to-end authorization is claimed yet.
+Host tests cover durable writes/failures, candidate separation, record restoration, expiry, lost ACK, exact-identity verification, origin binding and rotation boundaries. TinyC6 builds cover the actual worker/NVS integration. Remaining gates: matching server/browser tests, owner-approved legacy migration, revoked-token recovery, automatic renewal with management off, physical power cuts, replay drain, and SD/BLE responsiveness during sustained transport. The dated development authorization and replay evidence above does not establish production qualification.
+
+## Integration with USB provisioning
+
+Development builds retain the owner-approved app flow and authenticated local Settings. An existing valid USB owner record selects the identity-bound USB configuration and its AppBearerRotation state instead; the two credential state machines are not active together. Production candidates require USB provisioning and the existing hardware security gate before networking, and disable local settings and legacy OTA. A physical owner reset clears both credential stores and pending app proofs while retaining the app installation identity; queued telemetry is retained.
+
+Owner reset uses an independent persistent pending marker before clearing credentials. Interrupted resets resume before network initialization; any read, write, or clear failure keeps Wi-Fi and BLE disabled for that boot. If the initial marker write fails, firmware stays offline rather than assuming a restart would preserve the request. Host fault-injection tests cover partial clears and marker failures; physical power-loss qualification remains required.

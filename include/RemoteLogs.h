@@ -4,11 +4,14 @@
 #include <atomic>
 #include <FS.h>
 #endif
+class AppBearerRotation;
 class RemoteLogs {
  public:
+  void setBearerRotation(AppBearerRotation *provider) { bearerRotation_=provider; }
   void begin(const AppConfig::UploadConfig &config);
   void loop(bool enabled);
  private:
+  AppBearerRotation *bearerRotation_=nullptr;
 #if defined(ESP32)
   AppConfig::UploadConfig config_{};
   String host_,path_,identity_,accessId_,accessSecret_,token_;

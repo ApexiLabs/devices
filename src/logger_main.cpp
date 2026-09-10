@@ -10,19 +10,30 @@
 #include <WiFi.h>
 #endif
 
+#if defined(ESP32)
+#include "OwnerResetNvs.h"
+#include <esp_flash_encrypt.h>
+#include <esp_secure_boot.h>
+#endif
+
 #include "AppConfig.h"
+#include "AppBearerRotation.h"
 #include "CsvLogger.h"
 #include "Dashboard.h"
 #include "DashLink.h"
 #include "BatteryMonitor.h"
 #include "LiveUpload.h"
 #include "Logic.h"
+#include "DeviceProvisioning.h"
+#include "ProvisioningPolicy.h"
 #include "RuntimeSettings.h"
 #include "SensorChannel.h"
 #include "Timekeeper.h"
 #include "WebUi.h"
 #include "SystemLog.h"
 #include "RemoteLogs.h"
+#include "SignedOtaEsp32.h"
+#include "OwnerReset.h"
 
 namespace {
 
@@ -45,6 +56,27 @@ LiveUpload liveUpload;
 LoggerAuthorization loggerAuthorization;
 RuntimeSettings runtimeSettings;
 RemoteLogs remoteLogs;
+DeviceProvisioning deviceProvisioning;
+AppBearerRotation appBearerRotation;
+#if defined(ESP32)
+SignedOtaEsp32 signedOtaBackend;
+OtaBootHealth otaBootHealth(signedOtaBackend);
+#endif
+
+bool ownerResetReady = true;
+#if defined(ESP32)
+OwnerReset::NvsStore ownerResetStore;
+OwnerReset::Coordinator ownerReset;
+void clearOwnerState(bool requested) {
+  auto owner = [] { return deviceProvisioning.factoryResetOwnerCredentials(); };
+  auto runtime = [] { return runtimeSettings.factoryReset(); };
+  auto rotation = [] { return appBearerRotation.factoryReset(); };
+  auto authorization = [] { return loggerAuthorization.factoryReset(); };
+  if (requested) ownerReset.request(ownerResetStore, owner, runtime, rotation, authorization);
+  else ownerReset.resume(ownerResetStore, owner, runtime, rotation, authorization);
+  ownerResetReady = ownerReset.networkAllowed();
+}
+#endif
 
 bool adcReady = false;
 bool rtcReady = false;
@@ -52,6 +84,9 @@ bool rtcNetworkSynced = false;
 bool wifiReady = false;
 bool otaReady = false;
 bool networkTimeConfigured = false;
+bool secureBootEnabled = false;
+bool flashEncryptionEnabled = false;
+bool flashEncryptionReleaseMode = false;
 String rtcLastSync;
 
 uint32_t lastSampleMs = 0;
@@ -131,6 +166,25 @@ AppState buildState() {
   state.uptime = String(Logic::formatUptime(uptimeMs).c_str());
   state.timestamp = timekeeper.logTimestamp(state.uptimeMs);
   state.transportTimestamp = timekeeper.transportTimestamp(state.uptimeMs);
+  liveUpload.setClockFault((AppConfig::kFeatures.rtcEnabled && !rtcReady) ||
+                          !state.transportTimestamp.endsWith("Z"));
+  const char *authorizedId = loggerAuthorization.uploadConfig().deviceId;
+  state.system.deviceId = !deviceProvisioning.isProvisioned() && authorizedId
+      ? authorizedId : deviceProvisioning.deviceId();
+  state.system.deviceName = deviceProvisioning.friendlyName();
+  state.system.hardwareRevision = deviceProvisioning.hardwareRevision();
+  state.system.provisioningStatus = deviceProvisioning.status();
+  state.system.provisioningError = deviceProvisioning.lastError();
+  state.system.provisionedAt = deviceProvisioning.provisionedAt();
+  state.system.productionSecurityRequired = APEXI_PRODUCTION_SECURITY_REQUIRED != 0;
+  state.system.secureBootEnabled = secureBootEnabled;
+  state.system.flashEncryptionEnabled = flashEncryptionEnabled;
+  state.system.flashEncryptionReleaseMode = flashEncryptionReleaseMode;
+  state.system.productionSecurityReady = Logic::productionSecurityAllowsNetwork(
+      state.system.productionSecurityRequired, secureBootEnabled, flashEncryptionReleaseMode);
+#if defined(ESP32)
+  if (state.system.productionSecurityRequired) state.system.productionSecurityReady = signedOtaBackend.securePosture();
+#endif
   state.system.adcReady = adcReady;
   state.system.displayEnabled = AppConfig::kFeatures.displayEnabled;
   state.system.rtcEnabled = AppConfig::kFeatures.rtcEnabled;
@@ -147,7 +201,8 @@ AppState buildState() {
   state.system.dashEnabled = dashLink.isEnabled();
   state.system.dashConnected = dashLink.isConnected();
   state.system.dashStatus = dashLink.status();
-  state.system.otaEnabled = AppConfig::kFeatures.otaUpdatesEnabled;
+  state.system.otaEnabled = OtaPolicy::legacyAllowed(APEXI_PRODUCTION_SECURITY_REQUIRED != 0,
+                                                    AppConfig::kFeatures.otaUpdatesEnabled);
   state.system.otaReady = otaReady;
   state.system.wifiMode = webUi.modeString();
   state.system.ipAddress = webUi.ipAddress();
@@ -173,7 +228,16 @@ AppState buildState() {
   state.system.storeForwardPendingBytes = liveUpload.storeForwardPendingBytes();
   state.system.storeForwardCapacityBytes = liveUpload.storeForwardCapacityBytes();
   state.system.storeForwardDroppedRecords = liveUpload.storeForwardDroppedRecords();
+  state.system.storeForwardCorruptionEvents = liveUpload.storeForwardCorruptionEvents();
+  state.system.storeForwardQuarantinedBytes = liveUpload.storeForwardQuarantinedBytes();
   state.system.storeForwardError = liveUpload.storeForwardError();
+  state.system.storeForwardOldestJson = liveUpload.queueOldestDiagnostics();
+  state.system.uploadCaptureDrops = liveUpload.uploadCaptureDrops();
+#if defined(ESP32)
+  state.system.otaBootHealth = otaBootHealth.status();
+#else
+  state.system.otaBootHealth = "unsupported";
+#endif
   return state;
 }
 
@@ -186,14 +250,17 @@ void sampleSensors() {
 }
 
 void beginOta() {
-  if (!AppConfig::kFeatures.otaUpdatesEnabled || !wifiReady ||
-      webUi.modeString() != "STA" || strlen(AppConfig::kOta.password) == 0) {
+  const AppConfig::OtaConfig &ota = deviceProvisioning.isProvisioned()
+      ? deviceProvisioning.otaConfig() : AppConfig::kOta;
+  if (!OtaPolicy::legacyAllowed(APEXI_PRODUCTION_SECURITY_REQUIRED != 0,
+                                AppConfig::kFeatures.otaUpdatesEnabled) || !wifiReady ||
+      webUi.modeString() != "STA" || strlen(ota.password) == 0) {
     otaReady = false;
     return;
   }
 
-  ArduinoOTA.setHostname(AppConfig::kOta.hostname);
-  ArduinoOTA.setPassword(AppConfig::kOta.password);
+  ArduinoOTA.setHostname(ota.hostname);
+  ArduinoOTA.setPassword(ota.password);
   ArduinoOTA.onStart([]() { systemLog.add("ota_started"); Serial.println("OTA update started"); });
   ArduinoOTA.onEnd([]() { systemLog.add("ota_complete"); Serial.println("OTA update complete"); });
   ArduinoOTA.onError([](ota_error_t error) {
@@ -230,7 +297,10 @@ bool syncRtcFromNetwork(const bool waitForInitialSync) {
   while (waitForInitialSync &&
          now < static_cast<time_t>(kValidNetworkEpoch) &&
          (millis() - startedMs) < kNtpSyncTimeoutMs) {
-    ArduinoOTA.handle();
+    if (otaReady && OtaPolicy::legacyAllowed(APEXI_PRODUCTION_SECURITY_REQUIRED != 0,
+                                            AppConfig::kFeatures.otaUpdatesEnabled)) {
+      ArduinoOTA.handle();
+    }
     webUi.handleClient();
     delay(100);
     now = time(nullptr);
@@ -266,6 +336,9 @@ void maintainRtcSync(const uint32_t nowMs) {
 }  // namespace
 
 void setup() {
+#if defined(ESP32)
+  otaBootHealth.begin(millis(), APEXI_PRODUCTION_SECURITY_REQUIRED != 0);
+#endif
   Serial.begin(115200);
   const uint32_t serialWaitStartMs = millis();
   while (!Serial && (millis() - serialWaitStartMs) < 5000) {
@@ -283,6 +356,67 @@ void setup() {
 #endif
 
   pinMode(AppConfig::kPins.buttonPin, INPUT_PULLUP);
+
+#if defined(ESP32)
+  clearOwnerState(false);
+#endif
+  deviceProvisioning.begin(AppConfig::kWifi, AppConfig::kOta, AppConfig::kLiveUpload);
+#if defined(ESP32)
+  secureBootEnabled = esp_secure_boot_enabled();
+  flashEncryptionEnabled = esp_flash_encryption_enabled();
+  flashEncryptionReleaseMode =
+      esp_get_flash_encryption_mode() == ESP_FLASH_ENC_MODE_RELEASE;
+#endif
+  Serial.print("DEVICE_ID=");
+  Serial.println(deviceProvisioning.deviceId());
+  Serial.print("PROVISIONING_STATUS=");
+  Serial.println(deviceProvisioning.status());
+
+#if defined(ESP32)
+  if (digitalRead(AppConfig::kPins.buttonPin) == LOW) {
+    const uint32_t resetStartedMs = millis();
+    while (digitalRead(AppConfig::kPins.buttonPin) == LOW &&
+           (millis() - resetStartedMs) < 5000) {
+      delay(20);
+    }
+    if ((millis() - resetStartedMs) >= 5000) {
+      clearOwnerState(true);
+      Serial.println(ownerResetReady ? "FACTORY_RESET=owner-credentials-cleared"
+                                    : "FACTORY_RESET=pending-network-disabled");
+      if (ownerResetReady) {
+        Serial.flush();
+        delay(250);
+        ESP.restart();
+      }
+
+    }
+  }
+
+  Serial.setTimeout(2500);
+  const uint32_t provisioningWindowStartedMs = millis();
+  while ((millis() - provisioningWindowStartedMs) < 2500) {
+    if (Serial.available() > 0) {
+      const String command = Serial.readStringUntil('\n');
+      const bool provisioningAccepted = ownerResetReady && deviceProvisioning.acceptSerialCommand(
+          command, [] { clearOwnerState(true); return ownerResetReady; });
+      if (provisioningAccepted) {
+        Serial.println("PROVISIONING_RESULT=accepted");
+        Serial.flush();
+        delay(250);
+        ESP.restart();
+      }
+      Serial.print("PROVISIONING_RESULT=rejected error=");
+      Serial.println(deviceProvisioning.lastError());
+      if (ownerResetReady && command.startsWith("APEXI_PROVISION ")) {
+        Serial.flush();
+        delay(250);
+        ESP.restart();
+      }
+      break;
+    }
+    delay(10);
+  }
+#endif
   if (AppConfig::kFeatures.displayEnabled) {
     pinMode(AppConfig::kPins.tftCs, OUTPUT);
     digitalWrite(AppConfig::kPins.tftCs, HIGH);
@@ -300,20 +434,58 @@ void setup() {
     csvLogger.disable();
   }
 
-  runtimeSettings.begin(AppConfig::kLiveUpload, AppConfig::kFeatures.liveUploadEnabled);
-  wifiReady = webUi.begin(AppConfig::kWifi, csvLogger, runtimeSettings);
-  loggerAuthorization.begin(runtimeSettings.uploadConfig());
-  webUi.setAuthorization(loggerAuthorization);
-  liveUpload.setAuthorization(loggerAuthorization);
-  liveUpload.begin(loggerAuthorization.uploadConfig(),
-                   runtimeSettings.liveUploadEnabled(),
-                   runtimeSettings.remoteManagementEnabled(),
-                   runtimeSettings.appliedConfigVersion());
-  liveUpload.setReportedConfig(runtimeSettings.liveUploadEnabled(),
-                               runtimeSettings.ntpPrimary(),
-                               runtimeSettings.ntpSecondary(),
-                               runtimeSettings.timeZoneRule(),
-                               runtimeSettings.timeZoneLabel());
+#if defined(ESP32)
+  constexpr bool kProductionEsp32Target = APEXI_PRODUCTION_SECURITY_REQUIRED != 0;
+#else
+  constexpr bool kProductionEsp32Target = false;
+#endif
+  const bool networkAllowed = ownerResetReady && ProvisioningPolicy::networkAllowed(
+      kProductionEsp32Target, deviceProvisioning.isProvisioned()) &&
+      Logic::productionSecurityAllowsNetwork(APEXI_PRODUCTION_SECURITY_REQUIRED != 0,
+                                             secureBootEnabled,
+                                             flashEncryptionReleaseMode)
+#if defined(ESP32)
+      && (APEXI_PRODUCTION_SECURITY_REQUIRED == 0 || signedOtaBackend.securePosture())
+#endif
+      ;
+  if (networkAllowed) {
+    const bool usbProvisioned = deviceProvisioning.isProvisioned();
+    auto uploadDefaults = usbProvisioned ? deviceProvisioning.uploadConfig() : AppConfig::kLiveUpload;
+    if (!usbProvisioned) uploadDefaults.deviceId = deviceProvisioning.deviceId();
+    const auto &wifiConfig = usbProvisioned ? deviceProvisioning.wifiConfig() : AppConfig::kWifi;
+    const auto &otaConfig = usbProvisioned ? deviceProvisioning.otaConfig() : AppConfig::kOta;
+    appBearerRotation.begin(uploadDefaults.appDeviceToken);
+    runtimeSettings.begin(uploadDefaults,
+                          AppConfig::kFeatures.liveUploadEnabled,
+                          usbProvisioned && deviceProvisioning.remoteManagementEnabled());
+    wifiReady = webUi.begin(wifiConfig, csvLogger, runtimeSettings,
+                            deviceProvisioning.deviceId(),
+                            otaConfig.password,
+                            AppConfig::kFeatures.localSettingsEnabled);
+    if (!usbProvisioned) {
+      loggerAuthorization.begin(runtimeSettings.uploadConfig());
+      webUi.setAuthorization(loggerAuthorization);
+      liveUpload.setAuthorization(loggerAuthorization);
+    }
+    liveUpload.begin(usbProvisioned ? runtimeSettings.uploadConfig() : loggerAuthorization.uploadConfig(),
+                     runtimeSettings.liveUploadEnabled(),
+                     runtimeSettings.remoteManagementEnabled(),
+                     runtimeSettings.appliedConfigVersion(),
+                     usbProvisioned ? &appBearerRotation : nullptr);
+    liveUpload.setReportedConfig(runtimeSettings.liveUploadEnabled(),
+                                 runtimeSettings.ntpPrimary(),
+                                 runtimeSettings.ntpSecondary(),
+                                 runtimeSettings.timeZoneRule(),
+                                 runtimeSettings.timeZoneLabel());
+    liveUpload.setDeviceMetadata(deviceProvisioning.friendlyName(),
+                                 deviceProvisioning.hardwareRevision(),
+                                 deviceProvisioning.provisionedAt());
+  } else {
+    wifiReady = false;
+    Serial.println(deviceProvisioning.isProvisioned()
+                       ? "NETWORK_DISABLED=production-security-required"
+                       : "NETWORK_DISABLED=provisioning-required");
+  }
   Serial.print("storeForwardReady=");
   Serial.print(liveUpload.storeForwardReady() ? "1" : "0");
   Serial.print(" pending=");
@@ -328,7 +500,9 @@ void setup() {
   Serial.println(webUi.modeString());
   Serial.print("ip=");
   Serial.println(webUi.ipAddress());
-  beginOta();
+  if (networkAllowed) {
+    beginOta();
+  }
   Serial.print("otaReady=");
   Serial.println(otaReady ? "1" : "0");
 
@@ -336,7 +510,9 @@ void setup() {
   spiBus.begin();
 
   dashboard.begin();
-  dashLink.begin(AppConfig::kDashLink);
+  auto dashConfig = AppConfig::kDashLink;
+  dashConfig.enabled = dashConfig.enabled && networkAllowed;
+  dashLink.begin(dashConfig);
 
   adcReady = ads.begin(AppConfig::kAds1115Address, &Wire);
   if (adcReady) {
@@ -358,11 +534,15 @@ void setup() {
 
   sampleSensors();
   batteryMonitor.begin();
-  systemLog.begin(timekeeper,loggerAuthorization.uploadConfig().deviceId);
-  remoteLogs.begin(loggerAuthorization.uploadConfig());
+  const auto &activeUpload = deviceProvisioning.isProvisioned()
+      ? runtimeSettings.uploadConfig() : loggerAuthorization.uploadConfig();
+  systemLog.begin(timekeeper, activeUpload.deviceId ? activeUpload.deviceId : deviceProvisioning.deviceId());
+  remoteLogs.setBearerRotation(deviceProvisioning.isProvisioned() ? &appBearerRotation : nullptr);
+  if (networkAllowed) remoteLogs.begin(activeUpload);
   const AppState initialState = buildState();
   dashboard.render(initialState);
   webUi.publishState(initialState);
+  liveUpload.recordCompletedBoot();
 }
 
 void loop() {
@@ -407,6 +587,15 @@ void loop() {
   handleButton();
   webUi.handleClient();
   liveUpload.loop();
+#if defined(ESP32)
+  bool sensorsHealthy = adcReady;
+  for (const auto &sensor : sensorChannels) {
+    const auto snapshot = sensor.snapshot();
+    sensorsHealthy = sensorsHealthy && snapshot.hasValidSample && snapshot.activeFault == SensorFault::None;
+  }
+  otaBootHealth.poll(millis(), sensorsHealthy, liveUpload.storeForwardReady(),
+                     liveUpload.hasAuthenticatedHeartbeat());
+#endif
   webUi.setManagementPairingCode(liveUpload.pairingCode(),
                                  liveUpload.pairingCodeExpiresInSeconds());
   RemoteConfig remoteConfig{};
@@ -423,9 +612,12 @@ void loop() {
       Serial.flush();
       delay(250);
       ESP.restart();
+    } else {
+      liveUpload.rejectRemoteConfig();
     }
   }
-  if (otaReady) {
+  if (otaReady && OtaPolicy::legacyAllowed(APEXI_PRODUCTION_SECURITY_REQUIRED != 0,
+                                          AppConfig::kFeatures.otaUpdatesEnabled)) {
     ArduinoOTA.handle();
   }
 
@@ -464,7 +656,7 @@ void loop() {
     lastDisplayMs = nowMs;
   }
 
-  if ((nowMs - lastUploadPublishMs) >= AppConfig::kLiveUpload.publishIntervalMs) {
+  if ((nowMs - lastUploadPublishMs) >= deviceProvisioning.uploadConfig().publishIntervalMs) {
     const AppState state = buildState();
     liveUpload.publishIfDue(state);
     webUi.publishState(buildState());

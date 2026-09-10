@@ -1,10 +1,14 @@
 .pio/
-.platformio/
-.venv/
+.platformio
+.venv
 .snyk-cache/
 .snyk-home/
 .vscode/
 .build-tests/
 .omx/
 src/idf_component.yml
+__pycache__/
+*.pyc
 include/AppSecrets.h
+
+.verification-venv/

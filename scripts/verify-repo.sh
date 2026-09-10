@@ -7,6 +7,7 @@ MODE="${1:---fast}"
 run_fast() {
   "$ROOT_DIR/scripts/run-host-tests.sh"
   "$ROOT_DIR/scripts/check-repo-contracts.sh"
+  python3 "$ROOT_DIR/scripts/validate_qualification_records.py"
 }
 
 run_full() {

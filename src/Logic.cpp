@@ -82,6 +82,17 @@ bool shouldDiscardQueuedHttpStatus(const int status) {
   return status == 400 || status == 404 || status == 413 || status == 422;
 }
 
+bool productionSecurityAllowsNetwork(const bool required,
+                                     const bool secureBootEnabled,
+                                     const bool flashEncryptionReleaseMode) {
+  return !required || (secureBootEnabled && flashEncryptionReleaseMode);
+}
+
+bool isValidRecorderAssignmentStatus(const std::string_view status) {
+  return status == "unassigned" || status == "armed" || status == "claimed" ||
+         status == "finished" || status == "revoked" || status == "expired";
+}
+
 std::string fallbackTimestamp(const uint32_t uptimeMs) {
   return "boot+" + std::to_string(uptimeMs);
 }

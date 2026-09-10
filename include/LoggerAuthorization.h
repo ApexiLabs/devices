@@ -17,6 +17,7 @@ class LoggerAuthorization {
  public:
   bool begin(const AppConfig::UploadConfig &config);
   bool requestAuthorization();
+  bool factoryReset();
   void loop();
   const AppConfig::UploadConfig &uploadConfig() const {return config_;}
   const String &hardwareId() const {return hardwareId_;}
@@ -38,6 +39,7 @@ class LoggerAuthorization {
  private:
   friend struct AuthorizationTestAccess;
   bool restoreRecord(const String &record);
+  static bool ownerResetRecord(const String &saved, String &record);
   bool saveRecord(const String &token,const String &deviceId,uint32_t version);
   bool send(bool start,bool ack=false,bool verify=false);
   void accept(int httpStatus,const String &body,bool start,bool ack,bool verify=false);

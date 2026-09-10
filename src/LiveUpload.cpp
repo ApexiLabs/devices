@@ -18,13 +18,13 @@
 
 namespace {
 
-constexpr uint16_t kMqttBufferSize = 2048;
+constexpr uint16_t kMqttBufferSize = 3072;
 constexpr uint16_t kMqttSocketTimeoutSeconds = 1;
 constexpr uint32_t kNetworkClientTimeoutMs = 500;
 constexpr uint32_t kStatusHeartbeatMs = 30000;
 constexpr uint32_t kPairingCodeRefreshMs = 10UL * 60UL * 1000UL;
-constexpr size_t kRemoteConfigJsonCapacity = 1024;
-constexpr size_t kHttpsResponseJsonCapacity = 4096;
+constexpr size_t kRemoteConfigJsonCapacity = 4096;
+constexpr size_t kHttpsResponseJsonCapacity = 5120;
 constexpr uint32_t kHttpsTimeoutMs = 4000;
 constexpr uint8_t kReplayRecordsPerCycle = 2;
 
@@ -76,6 +76,10 @@ bool validRemoteText(const char *value, const size_t maximumLength) {
   return true;
 }
 
+bool validOptionalRemoteText(const char *value, const size_t maximumLength) {
+  return value == nullptr || value[0] == '\0' || validRemoteText(value, maximumLength);
+}
+
 }  // namespace
 
 LiveUpload::LiveUpload() : mqttClient_(networkClient_) {}
@@ -83,7 +87,8 @@ LiveUpload::LiveUpload() : mqttClient_(networkClient_) {}
 bool LiveUpload::begin(const AppConfig::UploadConfig &config,
                        const bool enabled,
                        const bool remoteManagementEnabled,
-                       const uint32_t appliedConfigVersion) {
+                       const uint32_t appliedConfigVersion, AppBearerRotation *bearerRotation) {
+  bearerRotation_=bearerRotation;
   config_ = config;
   uploadEvidence_ = {};
   enabled_ = enabled;
@@ -285,8 +290,9 @@ bool LiveUpload::isEnabled() const { return enabled_; }
 
 UploadEvidence::Status LiveUpload::uploadEvidence(uint32_t nowMs) {
   const bool https=config_.protocol == AppConfig::UploadConfig::Protocol::Https;
+  if(!enabled_)return uploadEvidence_.status(false,false,https,nowMs,config_.publishIntervalMs);
   return uploadEvidence_.status(enabled_, WiFi.status()==WL_CONNECTED &&
-      (https ? (strlen(authorization_?authorization_->bearer():config_.appDeviceToken)>0 &&
+      (https ? (strlen(authorization_?authorization_->bearer():(bearerRotation_?bearerRotation_->activeBearer():config_.appDeviceToken))>0 &&
        (lastHttpStatus_==0 || (lastHttpStatus_>=200 && lastHttpStatus_<300))):
        mqttClient_.connected()), https, nowMs, config_.publishIntervalMs);
 }
@@ -302,7 +308,7 @@ String LiveUpload::protocolName() const {
 }
 
 String LiveUpload::serverName() const {
-  if (strlen(config_.mqttHost) == 0) {
+  if (config_.mqttHost == nullptr || config_.mqttHost[0] == '\0') {
     return "Not configured";
   }
   const String endpoint = String(config_.mqttHost) + ":" + String(config_.mqttPort);
@@ -381,6 +387,7 @@ bool LiveUpload::consumeRemoteConfig(RemoteConfig &config) {
 
 void LiveUpload::acknowledgeRemoteConfig(const uint32_t version) {
   appliedConfigVersion_ = version;
+  diagnostics_.configurationApplied(version);
   managementStatus_ = "applied";
   managementError_ = "";
   if (mqttClient_.connected()) {
@@ -402,6 +409,7 @@ bool LiveUpload::reconnect(const uint32_t nowMs) {
   }
 
   bool connected = false;
+  diagnostics_.transportAttempt(true);
   const String willPayload = buildStatusJson(false);
   if (strlen(config_.mqttUsername) > 0) {
     connected = mqttClient_.connect(clientId_.c_str(),
@@ -452,8 +460,9 @@ void LiveUpload::publishOfflineStatusAndDisconnect() {
 }
 
 bool LiveUpload::publishStatus(const bool connected) {
+  if(!authorization_ && bearerRotation_)return publishLegacyRotationStatus(connected);
 #if defined(ESP32)
-  if(config_.protocol==AppConfig::UploadConfig::Protocol::Https){statusRequested_=true;return workerReady_;}
+  if(config_.protocol==AppConfig::UploadConfig::Protocol::Https){statusRequested_=true;return false;}
 #endif
   const String payload = buildStatusJson(connected);
   if (config_.protocol == AppConfig::UploadConfig::Protocol::Https) {
@@ -492,19 +501,11 @@ void LiveUpload::handleMqttMessage(char *topic, uint8_t *payload, unsigned int l
   if (!remoteManagementEnabled_ || String(topic) != desiredConfigTopic()) {
     return;
   }
-  RemoteConfig candidate{};
-  if (!parseRemoteConfig(payload, length, candidate)) {
+  if (!consumeDesiredState(payload, length)) {
+    diagnostics_.configurationRejected();
     managementStatus_ = "rejected";
-    managementError_ = "Invalid desired configuration";
-    return;
+    managementError_ = "Invalid desired management state";
   }
-  if (candidate.version <= appliedConfigVersion_) {
-    return;
-  }
-  pendingRemoteConfig_ = candidate;
-  hasPendingRemoteConfig_ = true;
-  managementStatus_ = "pending";
-  managementError_ = "";
 }
 
 bool LiveUpload::parseRemoteConfig(const uint8_t *payload,
@@ -513,7 +514,7 @@ bool LiveUpload::parseRemoteConfig(const uint8_t *payload,
   if (length == 0 || length > kRemoteConfigJsonCapacity) {
     return false;
   }
-  StaticJsonDocument<kRemoteConfigJsonCapacity> document;
+  DynamicJsonDocument document(kRemoteConfigJsonCapacity);
   if (deserializeJson(document, payload, length) != DeserializationError::Ok) {
     return false;
   }
@@ -626,9 +627,14 @@ bool LiveUpload::replayQueuedSnapshot() {
 
 const char *LiveUpload::trustRoot() { return kIsrgRootX1; }
 
-bool LiveUpload::postHttps(const char *kind, const String &payload, String *responseBody) {
+bool LiveUpload::postHttps(const char *kind, const String &payload, String *responseBody,const char *bearer) {
+#if defined(ESP32)
+  // ESP32 transport belongs exclusively to the shared worker.
+  (void)kind;(void)payload;(void)responseBody;(void)bearer;return false;
+#else
   lastHttpsAttemptMs_ = millis();
-  const char *effectiveBearer=authorization_?authorization_->bearer(strcmp(kind,"status")==0):config_.appDeviceToken;
+  diagnostics_.transportAttempt(httpsRecoveryPending_);
+  const char *effectiveBearer=bearer?bearer:(authorization_?authorization_->bearer(strcmp(kind,"status")==0):(bearerRotation_?bearerRotation_->activeBearer():config_.appDeviceToken));
   if(strlen(effectiveBearer)==0) {
     lastHttpStatus_=0;lastPostRetryable_=true;httpsConnected_=false;
     lastError_="Device authorization required";lastHttpError_=lastError_;return false;
@@ -673,10 +679,10 @@ bool LiveUpload::postHttps(const char *kind, const String &payload, String *resp
   if(strcmp(kind,"snapshot")==0)
     uploadEvidence_.record(UploadEvidence::acceptedResponse(status,body.c_str()),millis());
   http.end();
-  if(status>=200 && status<300 && strcmp(kind,"snapshot")==0 &&
+  if(status>=200 && status<300 &&
       !UploadEvidence::acceptedResponse(status,body.c_str())) {
     lastPostRetryable_=true;
-    lastError_="HTTPS snapshot acknowledgement invalid";
+    lastError_="HTTPS acknowledgement invalid";
     lastHttpError_=lastError_;
     httpsConnected_=false;
     return false;
@@ -705,7 +711,10 @@ bool LiveUpload::postHttps(const char *kind, const String &payload, String *resp
   }
   lastPostRetryable_ = false;
   lastHttpError_="";
+  httpsRecoveryPending_=false;
+  if(strcmp(kind,"status")==0){authenticatedHeartbeatObserved_=true;lastAuthenticatedHeartbeatMs_=millis();}
   return true;
+#endif
 }
 
 void LiveUpload::consumeHttpsDesiredConfig(const String &responseBody) {
@@ -732,16 +741,19 @@ void LiveUpload::consumeHttpsDesiredConfig(const String &responseBody) {
   if(authorization_ && !authorization_->stageDesired(document["desired_config"].as<JsonObjectConst>())) {
     managementError_="Credential rotation rejected or storage unavailable";return;
   }
-  if(!remoteManagementEnabled_)return; // Security lifecycle never enables remote sensor configuration.
-  RemoteConfig candidate{};
-  if (!parseRemoteConfig(reinterpret_cast<const uint8_t *>(encoded.c_str()), encoded.length(), candidate) ||
-      candidate.version <= appliedConfigVersion_) {
+  if(!remoteManagementEnabled_) {
+    // Provisioned credentials may rotate without enabling remote sensor settings.
+    if(!authorization_ && bearerRotation_) {
+      JsonObjectConst desired=document["desired_config"].as<JsonObjectConst>();
+      if(desired["schema_version"].as<int>()==1 && String(desired["device_id"]|"")==deviceId_ &&
+         !parseCredentialRotation(desired["credential_rotation"].as<JsonObjectConst>()))
+        managementError_="Credential rotation rejected or storage unavailable";
+    }
     return;
   }
-  pendingRemoteConfig_ = candidate;
-  hasPendingRemoteConfig_ = true;
-  managementStatus_ = "pending";
-  managementError_ = "";
+  if(!consumeDesiredState(reinterpret_cast<const uint8_t *>(encoded.c_str()),encoded.length())) {
+    diagnostics_.configurationRejected();managementStatus_="rejected";managementError_="Invalid desired management state";
+  }
 }
 
 String LiveUpload::liveTopic() const {
@@ -770,26 +782,46 @@ String LiveUpload::buildStatusJson(const bool connected) const {
   json += "\"session_id\":\"" + jsonEscape(sessionId_) + "\",";
   json += "\"protocol\":\"" + protocolName() + "\",";
   json += "\"connected\":" + String(connected ? "true" : "false");
-  if (remoteManagementEnabled_ || authorization_) {
+  json += ",\"system\":";
+  json += diagnostics_.json(storeForwardEnabled() && storeForwardReady(),
+                            storeForwardPendingRecords(),
+                            storeForwardDroppedRecords(),
+                            storeForwardQueue_.droppedRecordsKnown()).c_str();
+  if (remoteManagementEnabled_ || authorization_ || bearerRotation_) {
     json += ",\"management\":{";
     json += "\"enabled\":"+String(remoteManagementEnabled_?"true":"false");
     if(authorization_) {
       const String ack=authorization_->rotationAcknowledgement();
       if(!ack.isEmpty())json+=",\"credential_rotation_ack\":"+ack;
+    } else if(bearerRotation_ && bearerRotation_->hasAppliedAcknowledgement()) {
+      json += ",\"credential_rotation_ack\":{\"version\":"+String(bearerRotation_->version())+
+              ",\"nonce\":\""+jsonEscape(bearerRotation_->nonce())+"\",\"state\":\"applied\"}";
     }
     if(remoteManagementEnabled_) {
-    json += ",\"pairing_code\":\"" + jsonEscape(pairingCode_) + "\",";
+    json += ",";
+    json += "\"pairing_code\":\"" + jsonEscape(pairingCode_) + "\",";
     json += "\"pairing_expires_in_s\":" + String(pairingCodeExpiresInSeconds()) + ",";
     json += "\"config_version\":" + String(appliedConfigVersion_) + ",";
     json += "\"status\":\"" + jsonEscape(managementStatus_) + "\",";
     json += "\"error\":\"" + jsonEscape(managementError_) + "\",";
     json += "\"firmware_version\":\"" + jsonEscape(APEXI_FIRMWARE_VERSION) + "\",";
+    json += "\"friendly_name\":\"" + jsonEscape(friendlyName_) + "\",";
+    json += "\"hardware_revision\":\"" + jsonEscape(hardwareRevision_) + "\",";
+    json += "\"provisioned_at\":\"" + jsonEscape(provisionedAt_) + "\",";
     json += "\"settings\":{";
     json += "\"upload_enabled\":" + String(reportedUploadEnabled_ ? "true" : "false") + ",";
     json += "\"ntp_primary\":\"" + jsonEscape(reportedNtpPrimary_) + "\",";
     json += "\"ntp_secondary\":\"" + jsonEscape(reportedNtpSecondary_) + "\",";
     json += "\"tz_rule\":\"" + jsonEscape(reportedTimeZoneRule_) + "\",";
     json += "\"tz_label\":\"" + jsonEscape(reportedTimeZoneLabel_) + "\"}";
+    json += ",\"assignment\":{";
+    json += "\"target_session_id\":\"" + jsonEscape(assignmentTargetSessionId_) + "\",";
+    json += "\"planned_session_name\":\"" + jsonEscape(assignmentPlannedSessionName_) + "\",";
+    json += "\"status\":\"" + jsonEscape(assignmentStatus_) + "\",";
+    json += "\"role\":\"" + jsonEscape(assignmentRole_) + "\",";
+    json += "\"expires_at\":\"" + jsonEscape(assignmentExpiresAt_) + "\",";
+    json += "\"source_session_id\":\"" + jsonEscape(assignmentSourceSessionId_) + "\",";
+    json += "\"recording_session_id\":\"" + jsonEscape(assignmentRecordingSessionId_) + "\"}";
     }
     json += "}";
   }
@@ -858,4 +890,209 @@ String LiveUpload::jsonEscape(const String &value) {
     }
   }
   return escaped;
+}
+
+void LiveUpload::setDeviceMetadata(const char *friendlyName,
+                                   const char *hardwareRevision,
+                                   const char *provisionedAt) {
+  friendlyName_ = friendlyName == nullptr ? "" : friendlyName;
+  hardwareRevision_ = hardwareRevision == nullptr ? "" : hardwareRevision;
+  provisionedAt_ = provisionedAt == nullptr ? "" : provisionedAt;
+}
+
+void LiveUpload::rejectRemoteConfig() {
+  diagnostics_.configurationRejected();
+  managementStatus_ = "rejected";
+  managementError_ = "Desired configuration could not be persisted";
+}
+
+uint32_t LiveUpload::storeForwardCorruptionEvents() const {
+  return storeForwardQueue_.corruptionEvents();
+}
+
+size_t LiveUpload::storeForwardQuarantinedBytes() const {
+  return storeForwardQueue_.quarantinedBytes();
+}
+
+bool LiveUpload::consumeDesiredState(const uint8_t *payload, const unsigned int length) {
+  if (length == 0 || length > kRemoteConfigJsonCapacity) {
+    return false;
+  }
+  DynamicJsonDocument document(kRemoteConfigJsonCapacity);
+  if (deserializeJson(document, payload, length) != DeserializationError::Ok ||
+      document["schema_version"].as<int>() != 1 ||
+      String(document["device_id"].as<const char *>()) != deviceId_) {
+    return false;
+  }
+  if (!document["config_version"].is<uint32_t>()) return false;
+  const uint32_t version = document["config_version"].as<uint32_t>();
+  diagnostics_.observeDesired(version, appliedConfigVersion_);
+  RemoteConfig candidate{};
+  if (version > appliedConfigVersion_) {
+    if (!parseRemoteConfig(payload, length, candidate)) {
+      return false;
+    }
+  }
+  if ((!document["assignment"].isNull() && !document["assignment"].is<JsonObject>()) ||
+      !parseAssignment(document["assignment"].as<JsonObjectConst>())) {
+    return false;
+  }
+  if ((!document["credential_rotation"].isNull() && !document["credential_rotation"].is<JsonObject>()) ||
+      !parseCredentialRotation(document["credential_rotation"].as<JsonObjectConst>())) {
+    return false;
+  }
+  if (version > appliedConfigVersion_) {
+    pendingRemoteConfig_ = candidate;
+    hasPendingRemoteConfig_ = true;
+    managementStatus_ = "pending";
+  } else if (bearerRotation_ != nullptr && bearerRotation_->hasCandidate()) {
+    managementStatus_ = "pending";
+  } else {
+    managementStatus_ = "applied";
+  }
+  managementError_ = "";
+  diagnostics_.configurationAccepted();
+  return true;
+}
+
+bool LiveUpload::parseCredentialRotation(const JsonObjectConst rotation) {
+  // LoggerAuthorization already validates/stages the HTTPS lifecycle envelope.
+  if(authorization_)return rotation.isNull() || config_.protocol==AppConfig::UploadConfig::Protocol::Https;
+  if (rotation.isNull()) {
+    return true;
+  }
+  if (config_.protocol != AppConfig::UploadConfig::Protocol::Https ||
+      bearerRotation_ == nullptr ||
+      String(rotation["type"].as<const char *>()) != "app_bearer" ||
+      !rotation["version"].is<uint32_t>() ||
+      !rotation["nonce"].is<const char *>() ||
+      !rotation["token"].is<const char *>() ||
+      !rotation["overlap_expires_at"].is<const char *>()) {
+    return false;
+  }
+  for (JsonPairConst item : rotation) {
+    const String key = item.key().c_str();
+    if (key != "type" && key != "version" && key != "nonce" && key != "token" &&
+        key != "overlap_expires_at") {
+      return false;
+    }
+  }
+  const AppBearerRotation::StageResult result = bearerRotation_->stage(
+      rotation["version"].as<uint32_t>(),
+      String(rotation["nonce"].as<const char *>()),
+      String(rotation["token"].as<const char *>()),
+      String(rotation["overlap_expires_at"].as<const char *>()));
+  if (result == AppBearerRotation::StageResult::Rejected ||
+      result == AppBearerRotation::StageResult::StorageFault) {
+    managementError_ = bearerRotation_->lastError();
+    return false;
+  }
+  managementStatus_ = result == AppBearerRotation::StageResult::AlreadyApplied
+                          ? "applied"
+                          : "pending";
+  return true;
+}
+
+bool LiveUpload::parseAssignment(const JsonObjectConst assignment) {
+  if (assignment.isNull()) {
+    return true;
+  }
+  const String status = String(assignment["status"].as<const char *>());
+  if (!Logic::isValidRecorderAssignmentStatus(status.c_str())) {
+    return false;
+  }
+  const char *target = assignment["target_session_id"] | "";
+  const char *name = assignment["planned_session_name"] | "";
+  const char *role = assignment["role"] | "";
+  const char *expiresAt = assignment["expires_at"] | "";
+  const char *source = assignment["source_session_id"] | "";
+  const char *recording = assignment["recording_session_id"] | "";
+  if (!validOptionalRemoteText(target, 96) || !validOptionalRemoteText(name, 200) ||
+      !validOptionalRemoteText(role, 16) || !validOptionalRemoteText(expiresAt, 64) ||
+      !validOptionalRemoteText(source, 96) || !validOptionalRemoteText(recording, 96)) {
+    return false;
+  }
+  assignmentTargetSessionId_ = target;
+  assignmentPlannedSessionName_ = name;
+  assignmentStatus_ = status;
+  assignmentRole_ = role;
+  assignmentExpiresAt_ = expiresAt;
+  assignmentSourceSessionId_ = source;
+  assignmentRecordingSessionId_ = recording;
+  return true;
+}
+
+bool LiveUpload::publishLegacyRotationStatus(const bool connected) {
+#if defined(ESP32)
+  if (config_.protocol == AppConfig::UploadConfig::Protocol::Https) {
+    statusRequested_ = true;
+    return false;  // Requested is not a server acknowledgement.
+  }
+#endif
+  const String payload = buildStatusJson(connected);
+  if (config_.protocol == AppConfig::UploadConfig::Protocol::Https) {
+    String response;
+    if (bearerRotation_ != nullptr && bearerRotation_->hasCandidate()) {
+      if (bearerRotation_->phase() == AppBearerRotation::Phase::Staged) {
+        if (!postHttps("status", payload, &response, bearerRotation_->activeBearer())) {
+          if (lastHttpStatus_ >= 400 && lastHttpStatus_ < 500 &&
+              !Logic::isRetryableHttpStatus(lastHttpStatus_)) {
+            bearerRotation_->abandonCandidate();
+            managementStatus_ = "rejected";
+            managementError_ = "Credential rotation acknowledgement rejected; candidate discarded";
+            const String recoveryPayload = buildStatusJson(connected);
+            response = "";
+            if (!postHttps("status", recoveryPayload, &response,
+                           bearerRotation_->activeBearer())) {
+              return false;
+            }
+            httpsConnected_ = connected;
+            lastStatusPublishMs_ = millis();
+            consumeHttpsDesiredConfig(response);
+            return true;
+          }
+          return false;
+        }
+        if (!bearerRotation_->markAcknowledged()) {
+          managementStatus_ = "rejected";
+          managementError_ = bearerRotation_->lastError();
+          return false;
+        }
+      } else {
+        if (postHttps("status", payload, &response, bearerRotation_->candidateBearer())) {
+          if (!bearerRotation_->promoteCandidate()) {
+            managementStatus_ = "pending";
+            managementError_ = bearerRotation_->lastError();
+            return false;
+          }
+          managementStatus_ = "applied";
+          managementError_ = "";
+        } else {
+          // A rejected or not-yet-active candidate must never destroy the old
+          // credential. Use the overlap bearer for service continuity and retry
+          // the durable candidate on the next heartbeat.
+          response = "";
+          if (!postHttps("status", payload, &response, bearerRotation_->activeBearer())) {
+            return false;
+          }
+          managementStatus_ = "pending";
+          managementError_ = "New app bearer not accepted; old bearer retained";
+        }
+      }
+    } else if (!postHttps("status", payload, &response,
+                          bearerRotation_ == nullptr ? nullptr
+                                                     : bearerRotation_->activeBearer())) {
+      return false;
+    }
+    httpsConnected_ = connected;
+    lastStatusPublishMs_ = millis();
+    consumeHttpsDesiredConfig(response);
+    return true;
+  }
+  if (!mqttClient_.publish(statusTopic().c_str(), payload.c_str(), true)) {
+    lastError_ = "MQTT status publish failed";
+    return false;
+  }
+  lastStatusPublishMs_ = millis();
+  return true;
 }

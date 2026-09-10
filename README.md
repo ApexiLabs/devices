@@ -6,9 +6,9 @@ The dashboard CSV list displays file sizes in decimal MB to two decimal places.
 Logger web sensor readings use two decimal places for pressure in bar and one for other units; this changes presentation only, not logged data or sensor accuracy.
 Logger-to-Dash upload status reports snapshot acceptance separately from connection state: verified app acknowledgement for HTTPS, unconfirmed transport writes for MQTT. Older Dash firmware remains compatible.
 TinyC6 store-and-forward uses the existing default `spiffs`-labelled partition as LittleFS; only wholly erased partitions are initialized automatically. Existing unmountable data is preserved. Upload diagnostics retain the HTTP status and server-acceptance age. The dashboard does not flag a healthy, recently acknowledged queue of up to two records as a fault; diagnostics still show the queue.
-Owner-approved ESP32 credential provisioning and recovery are under coordinated implementation; see [device authorization](docs/device-authorization.md) for the draft contract and release gates.
+Owner-approved ESP32 credential provisioning and recovery are implemented for development; see [device authorization](docs/device-authorization.md) for verified behaviour and remaining release gates.
 
-ESP32 HTTPS capture/replay now uses a shared background worker and reusable same-origin connections; see [HTTPS replay](docs/https-replay.md) for queue ownership, throughput measurements and remaining batch-ingest work. ESP8266 remains synchronous.
+ESP32 HTTPS capture/replay now uses a shared background worker and reusable same-origin connections; see [HTTPS replay](docs/https-replay.md) for queue ownership, throughput measurements and capability-gated batching and remaining qualification. ESP8266 remains synchronous.
 
 System events are stored separately from sensor CSVs, with Dash forwarding,
 an authenticated local viewer, and optional ESP32 HTTPS remote downloads.
@@ -25,9 +25,11 @@ Both firmware components live in `motorsport-data-acquisition` and share **Dash 
 
 These replace the previous `tinyc6`, `esp32dev`, `nodemcuv2`, and `waveshare_dash` environment names. The legacy OTA environment is now `logger-nodemcuv2-ota`. The default remains the NodeMCU logger; select the target explicitly for either ESP32 board.
 
-Release assets use `apexi-<target>-firmware.bin`, `apexi-<target>-firmware.elf`, and, for ESP32 targets, `apexi-<target>-factory.bin`. BLE discovery identifies the logger as `APEXI-LOGGER` and the dash as `APEXI-DASH`. Existing `mda-logger` upstream identity, OTA hostname, and `mda-logger/1` handshake remain compatible. The dash status API now calls its handshake state `loggerReady`.
+Release assets use `apexi-<target>-firmware.bin`, `apexi-<target>-firmware.elf`, and, for ESP32 targets, `apexi-<target>-factory.bin`. BLE discovery identifies the logger as `APEXI-LOGGER` and the dash as `APEXI-DASH`. New ESP32 loggers use hardware-derived identity, with an app-issued canonical recorder ID after authorization. Existing `mda-logger` history is retained only by explicit owner-approved migration; new boards do not reuse it. The `mda-logger/1` BLE handshake remains compatible. The dash status API now calls its handshake state `loggerReady`.
 
 Arduino/PlatformIO firmware for a configurable 4-20 mA motorsport logger and its separate Waveshare ESP32-S3 round dash, targeting the Unexpected Maker TinyC6, classic ESP32 DevKit/WROOM-class boards, and the NodeMCU 1.0 / ESP-12E DevKit V2.
+
+See [integration and compatibility](docs/logger-dash-integration.md) for the consolidated PR scope, identity handling, and remaining qualification.
 
 ## Features
 - Reads a configurable set of 4-20 mA sensors through an ADS1115-based analog front end
@@ -36,7 +38,7 @@ Arduino/PlatformIO firmware for a configurable 4-20 mA motorsport logger and its
 - Logs CSV data to microSD with RTC timestamps when RTC hardware is fitted
 - Serves a lightweight Wi-Fi dashboard and CSV download endpoints
 - Publishes live telemetry over MQTT or authenticated HTTPS when station Wi-Fi and upstream settings are configured
-- Buffers retryable HTTPS failures in a persistent circular onboard-flash queue on the 16 MB ESP32 target and replays them oldest-first after recovery
+- Buffers retryable HTTPS failures in a persistent circular onboard-flash queue on the TinyC6 and 16 MB ESP32 targets and replays them oldest-first after recovery
 - Lights the NodeMCU built-in LED steadily once firmware setup begins
 - Keeps pin mapping, sensor calibration, and refresh rates in one config file
 - Synchronises the RV-3028 from NTP at every networked boot and hourly thereafter, while retaining RTC holdover when offline
@@ -45,7 +47,7 @@ Arduino/PlatformIO firmware for a configurable 4-20 mA motorsport logger and its
 
 This project targets a NodeMCU 1.0 / ESP-12E DevKit V2 logger with external 4-20 mA receiver modules. The supported default uses a 0-8 bar pressure transmitter through a DFRobot SEN0262 into ADS1115 channel A0 and a 0-150 degrees Celsius temperature transmitter through a second SEN0262 into channel A1. Field transmitters are ordered for direct operation from the protected 12 V vehicle supply; the 24 V boost path is only a fallback when a transmitter cannot meet its loop compliance requirement at 12 V.
 
-For the detailed BOM, pin table, wiring guidance, and commissioning steps, see [docs/hardware-setup.md](docs/hardware-setup.md).
+For the detailed BOM, pin table, wiring guidance, and commissioning steps, see [docs/hardware-setup.md](docs/hardware-setup.md). Production acceptance is tracked separately in the [hardware qualification plan](docs/production-hardware-qualification.md); the current hardware remains unqualified until its physical evidence and approval fields are complete.
 
 Primary source files:
 - board target: [`platformio.ini`](platformio.ini)
@@ -64,6 +66,7 @@ Primary source files:
 - [`src/dash_main.cpp`](src/dash_main.cpp)
 - [`docs/hardware-setup.md`](docs/hardware-setup.md)
 - [`docs/repo-contracts.md`](docs/repo-contracts.md)
+- [`docs/production-hardware-qualification.md`](docs/production-hardware-qualification.md)
 
 ## Build and flash
 1. Install PlatformIO Core or use the PlatformIO VS Code extension.
@@ -140,6 +143,7 @@ The ESP32 target uses the checked-in 16 MB partition table: two 2 MB OTA applica
 Production brokers require authentication. Set `APEXI_MQTT_USERNAME` to the same normalized value as `kLiveUpload.deviceId`; the broker ACL uses that identity to limit the device to publishing `<topicPrefix>/<deviceId>/live` and `<topicPrefix>/<deviceId>/status`. When remote management is enabled, it may additionally read only its own `<topicPrefix>/<deviceId>/config/desired` topic. Keep the matching password in the encrypted infrastructure vault and never commit `AppSecrets.h`.
 
 Current behavior:
+- Periodic status adds observed queue, clock, configuration, reconnection, and persistent ESP32 boot diagnostics under `system`. Missing fields mean unavailable, not zero; see the [status diagnostics contract](docs/status-diagnostics.md).
 - The device publishes live sensor snapshots to MQTT on a fixed interval.
 - Each message includes `schema_version`, a normalized `device_id`, a per-boot `session_id`, a monotonic `sequence`, the current timestamp, and the current sensor values.
 - The retained MQTT status topic now reflects both online and offline state so downstream consumers do not keep stale liveness.
@@ -200,8 +204,8 @@ Example live payload shape:
 ```json
 {
   "schema_version": 1,
-  "device_id": "mda-logger",
-  "session_id": "mda-logger-boot-42",
+  "device_id": "mda-aabbccddeeff",
+  "session_id": "mda-aabbccddeeff-boot-42",
   "sequence": 12,
   "timestamp": "2026-04-05T02:15:30Z",
   "uptime_ms": 15234,
@@ -219,13 +223,16 @@ Example live payload shape:
 ```
 
 ## Host-side tests
+- USB provisioning tests also cover write/flush/read interruption, partial writes, and unconfirmed cleanup after rejection, keeping an indeterminate reservation when device state is unknown.
+- HTTPS host tests cover bounded immutable worker exchange, non-waiting polling during a held request, failed-heartbeat fairness/backoff, timestamp validity, and late acknowledgements after queue capacity rotation.
 - Run `./scripts/run-host-tests.sh` to execute hardware-independent logic tests on a desktop machine.
-- These tests cover sensor current conversion, threshold faults, engineering-value clamping, filter behavior, RTC/fallback timestamp formatting, and log filename sanitization edge cases.
+- These tests cover sensor conversion and faults, timestamps, filenames, identity derivation, malformed or mismatched provisioning, duplicate fleet IDs, and secret-free inventory output.
 - GitHub Actions is configured to run the repo fast verification path on pushes and pull requests in [host-tests.yml](.github/workflows/host-tests.yml).
 
 ## Runtime controls
 - Short press the UI button to switch between the main gauge screen and the diagnostics screen.
 - Hold the UI button for 1.2 seconds to clear latched sensor faults.
+- On ESP32, hold the UI button continuously for five seconds during boot to clear owner credentials and runtime settings while preserving the immutable device identity.
 
 ## Web endpoints
 The checked-in default is station mode. Create the ignored `include/AppSecrets.h` from the example and provide a 2.4 GHz SSID/password; `fast_connect`-style BSSID/channel pinning is not used, so the ESP8266 performs a normal network scan. If station association times out, firmware falls back to the open 2.4 GHz SoftAP `MDA-LOGGER` at `http://192.168.44.1` on channel 6. Set `AppConfig::kWifi.apPassword` to an 8+ character WPA2 key if a closed fallback AP is required.
@@ -236,3 +243,9 @@ The checked-in default is station mode. Create the ignored `include/AppSecrets.h
 - `/download/<file>` fetch a CSV log file
 
 The dashboard sizes sensor cards to their readings instead of stretching them across the page. Use the **Diagnostics** action beside **Settings**, or the fault-finding card, to open the full system view. The CSV card is visibly disabled and does not poll the file API when microSD logging is disabled in the firmware.
+
+## Production and provisioning boundaries
+
+The functional Logger/Dash development targets do not establish production qualification. Logger development builds support owner-approved app authorization and authenticated Settings; production candidates require identity-bound USB provisioning and the fail-closed secure-boot/encryption gate before networking. Legacy OTA remains disabled for production candidates. Existing USB-provisioned devices use their provisioned settings and bearer-rotation path; app-authorized devices use the persisted app credential path.
+
+See [device authorization](docs/device-authorization.md), [USB provisioning](docs/provisioning.md), [production security](docs/production-security.md), [signed releases](docs/releases.md), [queue recovery](docs/store-forward-recovery.md), and [physical qualification](docs/production-hardware-qualification.md). Remaining measured development limits and dated replay evidence are in [HTTPS replay](docs/https-replay.md).

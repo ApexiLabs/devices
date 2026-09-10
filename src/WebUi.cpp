@@ -10,16 +10,22 @@
 
 bool WebUi::begin(const AppConfig::WifiConfig &config,
                   CsvLogger &logger,
-                  RuntimeSettings &settings) {
+                  RuntimeSettings &settings,
+                  const char *deviceHostname,
+                  const char *settingsPassword,
+                  bool localSettingsEnabled) {
   logger_ = &logger;
   settings_ = &settings;
+  deviceHostname_ = deviceHostname;
+  settingsPassword_ = settingsPassword;
+  localSettingsEnabled_ = localSettingsEnabled;
 
   if (config.mode == AppConfig::WifiMode::Station && strlen(config.stationSsid) > 0) {
     WiFi.persistent(false);
 #if defined(ESP8266)
-    WiFi.hostname("mda-logger");
+    WiFi.hostname(deviceHostname_.c_str());
 #else
-    WiFi.setHostname("mda-logger");
+    WiFi.setHostname(deviceHostname_.c_str());
 #endif
     WiFi.mode(WIFI_STA);
     Serial.print("STA joining ");
@@ -41,6 +47,12 @@ bool WebUi::begin(const AppConfig::WifiConfig &config,
       Serial.print("STA failed status=");
       Serial.println(static_cast<int>(WiFi.status()));
     }
+  }
+
+  if (!ready_ && !config.fallbackApEnabled) {
+    mode_ = "OFF";
+    ipAddress_ = "0.0.0.0";
+    return false;
   }
 
   if (!ready_) {
@@ -78,6 +90,7 @@ bool WebUi::begin(const AppConfig::WifiConfig &config,
 }
 
 void WebUi::handleClient() {
+  if (!ready_) return;
   requestStartedMs_=millis();
   server_.handleClient();
   if (restartPending_ && (millis() - restartRequestedMs_) >= 750) {
@@ -109,6 +122,7 @@ void WebUi::registerRoutes() {
     sendLogged(200,"application/json",body);
   });
   server_.on("/api/authorization/start",HTTP_POST,[this](){
+    if (!localSettingsEnabled_) {server_.send(410,"text/plain","Local authorization disabled");return;}
     if(!settingsAuthorized())return;
     server_.sendHeader("Cache-Control","no-store");
     if(!authorization_ || server_.arg("csrf")!=authorization_->csrfToken() || authorization_->csrfToken().isEmpty()) {
@@ -193,6 +207,10 @@ void WebUi::handleFilesJson() {
 }
 
 void WebUi::handleSettings() {
+  if (!localSettingsEnabled_) {
+    server_.send(410, "text/plain", "Local settings are disabled; use provisioned device management.");
+    return;
+  }
   if (!settingsAuthorized()) {
     return;
   }
@@ -265,6 +283,10 @@ void WebUi::handleSettings() {
 }
 
 void WebUi::handleSettingsSave() {
+  if (!localSettingsEnabled_) {
+    server_.send(410, "text/plain", "Local settings are disabled; use provisioned device management.");
+    return;
+  }
   if (!settingsAuthorized()) {
     return;
   }
@@ -300,11 +322,11 @@ void WebUi::handleSettingsSave() {
 }
 
 bool WebUi::settingsAuthorized() {
-  if (strlen(AppConfig::kOta.password) == 0) {
+  if (settingsPassword_.isEmpty()) {
     sendLogged(503, "text/plain", "Configure APEXI_OTA_PASSWORD before using settings");
     return false;
   }
-  if (!server_.authenticate("admin", AppConfig::kOta.password)) {
+  if (!server_.authenticate("admin", settingsPassword_.c_str())) {
     server_.requestAuthentication(DIGEST_AUTH, "MDA Logger");
     systemLog.add("http_auth_challenge",401,2);
     return false;
@@ -390,6 +412,22 @@ String WebUi::liveJson() const {
   }
   json += "],";
   json += "\"system\":{";
+  json += "\"device_id\":\"" + jsonEscape(state_.system.deviceId) + "\",";
+  json += "\"device_name\":\"" + jsonEscape(state_.system.deviceName) + "\",";
+  json += "\"hardware_revision\":\"" + jsonEscape(state_.system.hardwareRevision) + "\",";
+  json += "\"provisioning_status\":\"" + jsonEscape(state_.system.provisioningStatus) + "\",";
+  json += "\"provisioning_error\":\"" + jsonEscape(state_.system.provisioningError) + "\",";
+  json += "\"provisioned_at\":\"" + jsonEscape(state_.system.provisionedAt) + "\",";
+  json += "\"production_security_required\":" +
+          String(state_.system.productionSecurityRequired ? "true" : "false") + ",";
+  json += "\"secure_boot_enabled\":" +
+          String(state_.system.secureBootEnabled ? "true" : "false") + ",";
+  json += "\"flash_encryption_enabled\":" +
+          String(state_.system.flashEncryptionEnabled ? "true" : "false") + ",";
+  json += "\"flash_encryption_release_mode\":" +
+          String(state_.system.flashEncryptionReleaseMode ? "true" : "false") + ",";
+  json += "\"production_security_ready\":" +
+          String(state_.system.productionSecurityReady ? "true" : "false") + ",";
   json += "\"adc_ready\":" + String(state_.system.adcReady ? "true" : "false") + ",";
   json += "\"display_enabled\":" + String(state_.system.displayEnabled ? "true" : "false") + ",";
   json += "\"rtc_enabled\":" + String(state_.system.rtcEnabled ? "true" : "false") + ",";
@@ -447,7 +485,14 @@ String WebUi::liveJson() const {
           String(state_.system.storeForwardCapacityBytes) + ",";
   json += "\"store_forward_dropped_records\":" +
           String(state_.system.storeForwardDroppedRecords) + ",";
+  json += "\"store_forward_corruption_events\":" +
+          String(state_.system.storeForwardCorruptionEvents) + ",";
+  json += "\"store_forward_quarantined_bytes\":" +
+          String(state_.system.storeForwardQuarantinedBytes) + ",";
   json += "\"store_forward_error\":\"" + jsonEscape(state_.system.storeForwardError) + "\",";
+  json += "\"store_forward_oldest\":" + (state_.system.storeForwardOldestJson.isEmpty() ? String("null") : state_.system.storeForwardOldestJson) + ",";
+  json += "\"ota_boot_health\":\"" + jsonEscape(state_.system.otaBootHealth) + "\",";
+  json += "\"upload_capture_drops\":" + String(state_.system.uploadCaptureDrops) + ",";
   json += "\"last_upload_error\":\"" + jsonEscape(state_.system.lastUploadError) + "\"}}";
   return json;
 }

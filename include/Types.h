@@ -38,6 +38,17 @@ struct SystemStatus {
   bool externalPower;
   String batteryTrend;
   String batteryState;
+  String deviceId;
+  String deviceName;
+  String hardwareRevision;
+  String provisioningStatus;
+  String provisioningError;
+  String provisionedAt;
+  bool productionSecurityRequired;
+  bool secureBootEnabled;
+  bool flashEncryptionEnabled;
+  bool flashEncryptionReleaseMode;
+  bool productionSecurityReady;
   bool adcReady;
   bool displayEnabled;
   bool rtcEnabled;
@@ -56,6 +67,7 @@ struct SystemStatus {
   String dashStatus;
   bool otaEnabled;
   bool otaReady;
+  String otaBootHealth;
   String wifiMode;
   String ipAddress;
   String currentLogFile;
@@ -78,7 +90,11 @@ struct SystemStatus {
   size_t storeForwardPendingBytes;
   size_t storeForwardCapacityBytes;
   uint32_t storeForwardDroppedRecords;
+  uint32_t storeForwardCorruptionEvents;
+  size_t storeForwardQuarantinedBytes;
   String storeForwardError;
+  String storeForwardOldestJson;
+  uint32_t uploadCaptureDrops;
 };
 
 struct AppState {

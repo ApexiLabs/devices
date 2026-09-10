@@ -1,0 +1,3 @@
+# Verification only. No private key or signing operation is required.
+esptool==4.11.0
+cryptography==50.0.1

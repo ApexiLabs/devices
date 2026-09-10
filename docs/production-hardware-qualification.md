@@ -29,7 +29,7 @@ Complete this table before electrical testing. Values shown as firmware assumpti
 | MCU manufacturer and exact board SKU | Manufacturer part number and board revision | Classic ESP32 DevKit/WROOM-compatible | TBD |
 | ESP32 module marking | Exact can/module marking | None | TBD |
 | Physical flash capacity | Read-back and tool used | 16 MB build target | TBD |
-| PlatformIO environment | Exact environment | `esp32dev_production_candidate` for acceptance | TBD |
+| PlatformIO environment | Exact environment | `logger-esp32-production-candidate` for acceptance | TBD |
 | Partition table | File and checksum | `partitions/esp32-16mb-store-forward.csv` | TBD |
 | ADC | Manufacturer, SKU, revision, I2C address | ADS1115-compatible, address `0x48` | TBD |
 | Pressure receiver | Manufacturer, SKU, revision | DFRobot SEN0262-compatible | TBD |
@@ -150,4 +150,3 @@ Field diagnostics should begin with power/ground and connector inspection, then 
 | Reviewer | TBD |
 | Review date (UTC) | TBD |
 | Decision | **NOT QUALIFIED** |
-

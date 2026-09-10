@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <cstdint>
 
 // Single producer (Arduino loop), single consumer (HTTP worker). Buffer
 // ownership transfers only through release/acquire state transitions. Neither
@@ -11,6 +12,7 @@ class HttpsExchange {
   enum class State { Idle, Requested, Complete };
   static constexpr size_t kBodyLimit = 6144;
   struct Request {
+    bool get = false;
     char url[513]{};
     char payload[kBodyLimit + 1]{};
     char bearer[2049]{};
@@ -18,12 +20,18 @@ class HttpsExchange {
     char accessSecret[513]{};
   };
   struct Result {
-    int status = -1;
+    // Keep cold storage zero-initialized so the shared worker buffers occupy
+    // BSS, not a flash-backed data image. No result is visible until complete();
+    // HttpsWorker resets status to -1 before attempting each HTTP transaction.
+    int status = 0;
+    int tlsError = 0;
+    uint32_t durationMs = 0;
+    bool reused = false;
     char body[kBodyLimit + 1]{};
   };
 
   bool submit(const char *url, const char *payload, const char *bearer,
-              const char *accessId, const char *accessSecret) {
+              const char *accessId, const char *accessSecret, bool get = false) {
     if (state_.load(std::memory_order_acquire) != State::Idle) return false;
     if (!fits(url, request_.url) || !fits(payload, request_.payload) ||
         !fits(bearer, request_.bearer) || !fits(accessId, request_.accessId) ||
@@ -33,6 +41,7 @@ class HttpsExchange {
     std::strcpy(request_.bearer, bearer);
     std::strcpy(request_.accessId, accessId);
     std::strcpy(request_.accessSecret, accessSecret);
+    request_.get = get;
     state_.store(State::Requested, std::memory_order_release);
     return true;
   }

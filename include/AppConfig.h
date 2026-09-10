@@ -47,6 +47,12 @@
 #ifndef APEXI_FIRMWARE_VERSION
 #define APEXI_FIRMWARE_VERSION "dev"
 #endif
+// Bench TinyC6: simultaneous meter 4.160 V / displayed 4.050 V.
+// Override per board; 1.0f disables this one-point gain correction.
+#ifndef APEXI_BATTERY_VOLTAGE_GAIN
+#define APEXI_BATTERY_VOLTAGE_GAIN (4.160f / 4.050f)
+#endif
+
 #ifndef APEXI_PRODUCTION_SECURITY_REQUIRED
 #define APEXI_PRODUCTION_SECURITY_REQUIRED 0
 #endif
@@ -137,6 +143,12 @@ struct UploadConfig {
 struct StoreForwardConfig {
   bool enabled;
   size_t maximumBytes;
+};
+
+struct DashLinkConfig {
+  bool enabled;
+  uint32_t retryIntervalMs;
+  uint32_t scanDurationSeconds;
 };
 
 struct RtcConfig {
@@ -234,29 +246,20 @@ inline constexpr WifiConfig kWifi{
     APEXI_WIFI_STATION_SSID,
     APEXI_WIFI_STATION_PASSWORD,
     30,
-#if defined(ESP32)
-    false,
-#else
-    true,
-#endif
+    APEXI_PRODUCTION_SECURITY_REQUIRED == 0,
 };
 
 inline constexpr FeatureConfig kFeatures{
     false,
     true,
-#if defined(ESP32)
+#if defined(ESP32) && !defined(ARDUINO_TINYC6)
     false,
 #else
     true,
 #endif
     true,
-#if defined(ESP32)
-    false,
-    false,
-#else
     true,
-    true,
-#endif
+    APEXI_PRODUCTION_SECURITY_REQUIRED == 0,
 };
 
 inline constexpr OtaConfig kOta{
@@ -277,10 +280,26 @@ inline constexpr UploadConfig kLiveUpload{
     APEXI_HTTPS_PATH,
     APEXI_CF_ACCESS_CLIENT_ID,
     APEXI_CF_ACCESS_CLIENT_SECRET,
+#if defined(ESP32)
+    "", // Owner-approved app credentials belong in persistent device storage.
+#else
     APEXI_APP_DEVICE_TOKEN,
+#endif
 };
 
+inline constexpr DashLinkConfig kDashLink{
 #if defined(ESP32)
+    true,
+#else
+    false,
+#endif
+    5000,
+    2,
+};
+
+#if defined(ARDUINO_TINYC6)
+inline constexpr StoreForwardConfig kStoreForward{true, 1UL * 1024UL * 1024UL};
+#elif defined(ESP32)
 inline constexpr StoreForwardConfig kStoreForward{true, 10UL * 1024UL * 1024UL};
 #else
 inline constexpr StoreForwardConfig kStoreForward{false, 0};

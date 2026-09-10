@@ -4,6 +4,8 @@
 
 Production ESP32 firmware derives its immutable logger ID from the 48-bit factory eFuse MAC and formats it as `mda-xxxxxxxxxxxx`. The ID is not an owner setting, is not accepted from the browser, and survives re-provisioning and factory reset. A factory-identical firmware image can therefore be installed on multiple boards without creating a shared `mda-logger` identity.
 
+Development ESP32 builds also support [owner-approved app authorization](device-authorization.md). That flow uses a hardware-derived public ID plus a persisted random installation secret and an app-issued canonical recorder ID; it does not require a USB owner bundle. Existing USB-provisioned devices retain the workflow below. Production candidates require USB provisioning and the production security gate.
+
 The ESP8266 build remains a development compatibility target. It derives a unique hostname from its chip ID, but the repeatable NVS provisioning workflow and production acceptance apply to the ESP32 target only.
 
 Factory state contains only the hardware revision. Owner state contains the friendly name, Wi-Fi credential, OTA/settings credential, transport selection and credential, app bearer, and non-secret provisioning timestamp. The firmware refuses to load an owner record whose recorded ID differs from the current eFuse identity. The fleet inventory is non-secret and refuses a second reservation of an existing ID unless the operator explicitly selects the audited re-provision path.
@@ -71,7 +73,7 @@ does not provide the production encrypted-NVS contract.
 
 ## Factory reset and recovery
 
-With the ESP32 powered, hold the physical UI button continuously for five seconds during boot. The device clears the owner NVS namespace and the flash-backed runtime settings, then restarts. It preserves the eFuse-derived identity and factory hardware revision. Network, transport, app, Cloudflare, MQTT, OTA/settings, friendly-name, and remote-management state are removed. Re-provision over USB before the logger can join a network again.
+With the ESP32 powered, hold the physical UI button continuously for five seconds during boot. The device clears the owner NVS namespace and the flash-backed runtime settings, then restarts. It preserves the eFuse-derived identity and factory hardware revision. Network, transport, app, Cloudflare, MQTT, OTA/settings, friendly-name, and remote-management state are removed. Production candidates require USB re-provisioning before networking. Development firmware may still use compiled development Wi-Fi defaults; app credentials and pending proofs are cleared, while installation identity is retained for fresh owner approval.
 
 A full flash erase also removes the factory hardware-revision record and onboard store-and-forward data, but it cannot change the eFuse identity. Treat full erase as destructive service recovery and capture or explicitly abandon queued telemetry first.
 

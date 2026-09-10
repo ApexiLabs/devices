@@ -2,8 +2,8 @@
 
 ## Release status
 
-The checked-in `esp32dev` environment is a development build. The
-`esp32dev_production_candidate` environment compiles the firmware-side
+The checked-in `logger-esp32` environment is a development build. The
+`logger-esp32-production-candidate` environment compiles the firmware-side
 `APEXI_PRODUCTION_SECURITY_REQUIRED=1` gate, but the bundled precompiled Arduino
 SDK currently has Secure Boot and flash encryption disabled. Neither environment
 is a production-approved image. ESP8266/NodeMCU is a compatibility and bench
@@ -62,8 +62,8 @@ validation and application authentication do not replace it.
 
 ## Commissioning and local exposure
 
-An unprovisioned ESP32 has no fallback access point, local web service, upload,
-or OTA service. ESP32 local HTTP settings are disabled even after provisioning;
+An unprovisioned production-candidate ESP32 has no fallback access point, local web service, upload,
+or OTA service. Production-candidate local HTTP settings are disabled even after provisioning;
 owner settings enter through the identity-bound USB workflow or the optional,
 allow-listed server management path. `/api/live`, diagnostics, and serial status
 may expose identity and security posture, but never Wi-Fi, OTA, MQTT, Cloudflare,

@@ -1,12 +1,14 @@
 #pragma once
 
 #include <Arduino.h>
+#include <vector>
 
 class StoreForwardQueue {
  public:
   bool begin(bool enabled, size_t maximumBytes);
   bool enqueue(const String &payload);
   bool peek(String &payload);
+  bool peekBatch(std::vector<String> &payloads, size_t maximumRecords, size_t maximumBytes);
   bool pop(bool discarded = false);
   // An append can rotate away a submitted record before HTTP completes.
   // Never acknowledge the replacement head in that case.

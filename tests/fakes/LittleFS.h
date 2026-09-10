@@ -36,6 +36,8 @@ class File {
 class LittleFSClass {
  public:
   bool begin(bool formatOnFail, const char *, uint8_t, const char *);
+  // This fake models populated recovery fixtures; formatting is never allowed.
+  bool format() { return false; }
   size_t totalBytes() const { return totalBytes_; }
   bool exists(const char *path) const;
   bool remove(const char *path);

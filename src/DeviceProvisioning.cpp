@@ -135,7 +135,7 @@ bool DeviceProvisioning::begin(const AppConfig::WifiConfig &wifiDefaults,
   return provisioned_;
 }
 
-bool DeviceProvisioning::acceptSerialCommand(const String &line) {
+bool DeviceProvisioning::acceptSerialCommand(const String &line, bool (*prepareOwnerChange)()) {
 #if !defined(ESP32)
   lastError_ = "USB provisioning requires the ESP32 production target";
   return false;
@@ -198,6 +198,13 @@ bool DeviceProvisioning::acceptSerialCommand(const String &line) {
   if (!existingRevision.isEmpty() && existingRevision != candidate.hardwareRevision.c_str()) {
     factory.end();
     lastError_ = "hardware_revision conflicts with factory record";
+    return false;
+  }
+  // Validate first: malformed commands must never erase an existing owner.
+  // Clear old credentials durably before the new owner can be marked ready.
+  if (prepareOwnerChange == nullptr || !prepareOwnerChange()) {
+    factory.end();
+    lastError_ = "owner transition incomplete; networking disabled";
     return false;
   }
   if (existingRevision.isEmpty() &&

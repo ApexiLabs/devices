@@ -1,4 +1,6 @@
 #include "WebUi.h"
+#include "SystemLog.h"
+#include "LoggerBranding.h"
 
 #if defined(ESP8266)
 #include <ESP8266WiFi.h>
@@ -11,7 +13,7 @@ bool WebUi::begin(const AppConfig::WifiConfig &config,
                   RuntimeSettings &settings,
                   const char *deviceHostname,
                   const char *settingsPassword,
-                  const bool localSettingsEnabled) {
+                  bool localSettingsEnabled) {
   logger_ = &logger;
   settings_ = &settings;
   deviceHostname_ = deviceHostname;
@@ -88,9 +90,8 @@ bool WebUi::begin(const AppConfig::WifiConfig &config,
 }
 
 void WebUi::handleClient() {
-  if (!ready_) {
-    return;
-  }
+  if (!ready_) return;
+  requestStartedMs_=millis();
   server_.handleClient();
   if (restartPending_ && (millis() - restartRequestedMs_) >= 750) {
     ESP.restart();
@@ -112,48 +113,126 @@ void WebUi::setManagementPairingCode(const String &pairingCode,
 }
 
 void WebUi::registerRoutes() {
-  server_.on("/", HTTP_GET, [this]() { handleIndex(); });
-  server_.on("/diagnostics", HTTP_GET, [this]() { handleDiagnostics(); });
+  server_.on("/api/authorization",HTTP_GET,[this](){
+    if(!settingsAuthorized())return;
+    server_.sendHeader("Cache-Control","no-store");
+    if(!authorization_){sendLogged(503,"application/json","{}");return;}
+    String body="{\"status\":\""+jsonEscape(authorization_->status())+"\",\"error\":\""+jsonEscape(authorization_->error())+
+      "\",\"user_code\":\""+jsonEscape(authorization_->userCode())+"\",\"expires_in\":"+String(authorization_->expiresIn())+"}";
+    sendLogged(200,"application/json",body);
+  });
+  server_.on("/api/authorization/start",HTTP_POST,[this](){
+    if (!localSettingsEnabled_) {server_.send(410,"text/plain","Local authorization disabled");return;}
+    if(!settingsAuthorized())return;
+    server_.sendHeader("Cache-Control","no-store");
+    if(!authorization_ || server_.arg("csrf")!=authorization_->csrfToken() || authorization_->csrfToken().isEmpty()) {
+      sendLogged(403,"application/json","{\"error\":\"Invalid authorization request\"}");return;
+    }
+    sendLogged(authorization_->requestAuthorization()?202:409,"application/json","{}");
+  });
+  server_.on("/api/logging",HTTP_POST,[this]() {
+    if(!settingsAuthorized()) return;
+    StaticJsonDocument<128> doc;
+    if(!server_.hasArg("plain") || server_.arg("plain").length()>128 || deserializeJson(doc,server_.arg("plain")) || !doc["detailed"].is<bool>()) {
+      sendLogged(400,"text/plain","Expected a JSON detailed boolean"); return;
+    }
+    systemLog.detailedRequests(doc["detailed"].as<bool>());
+    sendLogged(200,"application/json","{\"ok\":true}");
+  });
+  server_.on("/api/system-events",HTTP_GET,[this]() {
+    if(!settingsAuthorized()) return;
+    sendLogged(200,"application/json",systemLog.recentJson());
+  });
+  server_.on("/api/log-files",HTTP_GET,[this]() {
+    if(!settingsAuthorized()) return;
+    sendLogged(200,"application/json",systemLog.filesJson());
+  });
+  server_.on("/system-log-download",HTTP_GET,[this]() {
+    if(!settingsAuthorized()) return;
+    File f=systemLog.open(server_.arg("name"));
+    if(!f) { sendLogged(404,"text/plain","Log unavailable"); return; }
+    server_.sendHeader("Cache-Control","no-store");
+    server_.streamFile(f,"text/plain"); f.close(); systemLog.add("log_download");
+  });
+  server_.on("/logs",HTTP_GET,[this]() {
+    if(!settingsAuthorized()) return;
+    sendLogged(200,"text/html",loggerBranding(R"HTML(<!doctype html><meta name="viewport" content="width=device-width"><title>System logs</title>
+<style>body{background:#09151e;color:#e8eef5;font:16px system-ui;max-width:1100px;margin:2rem auto;padding:1rem}a{color:#7dd3fc}pre{white-space:pre-wrap;overflow-wrap:anywhere}select,button{padding:.5rem;margin:.5rem}</style>
+<a href="/diagnostics">Diagnostics</a><h1>System logs</h1><p>Logger and Dash events. Times are logger receipt times; boot and uptime preserve device ordering. RAM buffers are lost on power loss.</p>
+<label>Source <select id="source"><option value="">All devices</option><option value="logger">Logger</option><option value="dash">Dash</option></select></label>
+<label>Severity <select id="severity"><option value="">All</option><option>INFO</option><option>WARN</option><option>ERROR</option></select></label>
+<button id="refresh">Refresh</button><button id="detail">Detailed HTTP logging (10 minutes)</button><p id="status"></p><pre id="events"></pre><h2>Files</h2><div id="files"></div>
+<script>let rows=[];function render(){events.textContent=rows.filter(e=>(!source.value||e.device.startsWith(source.value))&&(!severity.value||e.severity===severity.value)).map(e=>JSON.stringify(e)).join('\n')}
+async function load(){try{const [a,b]=await Promise.all([fetch('/api/system-events'),fetch('/api/log-files')]);if(!a.ok||!b.ok)throw Error('Log access failed');const d=await a.json();rows=d.events;document.getElementById('status').textContent=`SD ${d.sd_ready?'ready':'unavailable'} · ${d.pending} pending · ${d.dropped} dropped`;render();files.replaceChildren();for(const f of await b.json()){const p=document.createElement('p'),a=document.createElement('a');a.href='/system-log-download?name='+encodeURIComponent(f.name);a.textContent=f.name+' ('+f.size+' bytes)';p.append(a);files.append(p)}}catch(e){document.getElementById('status').textContent=e.message}}
+refresh.onclick=load;source.onchange=render;severity.onchange=render;detail.onclick=async()=>{const r=await fetch('/api/logging',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({detailed:true})});if(!r.ok){document.getElementById('status').textContent='Could not enable detailed logging';return}detail.textContent='Detailed HTTP logging enabled for 10 minutes';load()};load();</script>)HTML"));
+  });
+  server_.on("/", HTTP_GET, [this]() { systemLog.add("http_get_dashboard"); handleIndex(); });
+  server_.on("/diagnostics", HTTP_GET, [this]() { systemLog.add("http_get_diagnostics"); handleDiagnostics(); });
   server_.on("/api/live", HTTP_GET, [this]() { handleLiveJson(); });
   server_.on("/api/files", HTTP_GET, [this]() { handleFilesJson(); });
-  server_.on("/settings", HTTP_GET, [this]() { handleSettings(); });
-  server_.on("/settings", HTTP_POST, [this]() { handleSettingsSave(); });
+  server_.on("/settings", HTTP_GET, [this]() { systemLog.add("http_get_settings"); handleSettings(); });
+  server_.on("/settings", HTTP_POST, [this]() { systemLog.add("http_post_settings"); handleSettingsSave(); });
   server_.onNotFound([this]() { handleDownload(); });
 }
 
-void WebUi::handleIndex() { server_.send(200, "text/html", indexHtml()); }
-
-void WebUi::handleDiagnostics() {
-  server_.send(200, "text/html", diagnosticsHtml());
+void WebUi::sendLogged(int status,const char *type,const String &body) {
+  server_.send(status,type,body);
+  const String path=server_.uri();
+  // Names come from the route allowlist, never a user-supplied path or query.
+  const char *code=path=="/"?"http_dashboard":path=="/settings"?"http_settings":path=="/diagnostics"?"http_diagnostics":path=="/logs"?"http_logs":"http_api";
+  static uint32_t polls=0,last=0;
+  if(!systemLog.detailedRequests() && status==200 && path.startsWith("/api/")) {
+    ++polls;
+    if(uint32_t(millis()-last)<60000) return;
+    systemLog.add("http_poll_summary",polls); polls=0; last=millis();
+  } else systemLog.http(code,uint8_t(server_.method()),status,millis()-requestStartedMs_);
 }
 
-void WebUi::handleLiveJson() { server_.send(200, "application/json", liveJson()); }
+void WebUi::handleIndex() { sendLogged(200, "text/html", indexHtml()); }
+
+void WebUi::handleDiagnostics() {
+  sendLogged(200, "text/html", diagnosticsHtml());
+}
+
+void WebUi::handleLiveJson() {
+  sendLogged(200, "application/json", liveJson());
+}
 
 void WebUi::handleFilesJson() {
   if (logger_ == nullptr) {
-    server_.send(503, "application/json", "[]");
+    sendLogged(503, "application/json", "[]");
     return;
   }
-  server_.send(200, "application/json", logger_->listFilesJson());
+  sendLogged(200, "application/json", logger_->listFilesJson());
 }
 
 void WebUi::handleSettings() {
   if (!localSettingsEnabled_) {
-    server_.send(410, "text/plain",
-                 "Local settings are disabled on ESP32. Use identity-bound USB provisioning or optional app management.");
+    server_.send(410, "text/plain", "Local settings are disabled; use provisioned device management.");
     return;
   }
   if (!settingsAuthorized()) {
     return;
   }
+  server_.sendHeader("Cache-Control","no-store");
 
   const AppConfig::UploadConfig &upload = settings_->uploadConfig();
   const bool httpsUpload = upload.protocol == AppConfig::UploadConfig::Protocol::Https;
-  String html = R"rawliteral(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>Logger Settings</title><style>body{font-family:system-ui;max-width:38rem;margin:2rem auto;padding:0 1rem;background:#09131f;color:#ecf2f8}label{display:block;margin:1rem 0}.hint{color:#95a8ba}input{box-sizing:border-box;width:100%;padding:.7rem;margin-top:.3rem}input[type=checkbox]{width:auto}button{padding:.8rem 1.2rem}a{color:#6dd6ff}h2{margin-top:2rem}</style></head><body><h1>Device settings</h1><form method="post" action="/settings"><h2>Upstream server</h2>)rawliteral";
+  String html = R"rawliteral(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>Apexi Logger Settings</title><style>body{font-family:system-ui;max-width:38rem;margin:2rem auto;padding:0 1rem;background:#09131f;color:#ecf2f8}label{display:block;margin:1rem 0}.hint{color:#95a8ba}input{box-sizing:border-box;width:100%;padding:.7rem;margin-top:.3rem}input[type=checkbox]{width:auto}button{padding:.8rem 1.2rem}a{color:#6dd6ff}h2{margin-top:2rem}</style></head><body><h1>Apexi Logger settings</h1><form method="post" action="/settings"><h2>Upstream server</h2>)rawliteral";
   html += httpsUpload
               ? R"rawliteral(<p class="hint">HTTPS through Cloudflare Access. Credentials may be compiled into the firmware or replaced below. Stored values are never returned by this page.</p>)rawliteral"
               : R"rawliteral(<p class="hint">MQTT credentials remain in the local secrets header and are never returned by this page.</p>)rawliteral";
   html += "<p>Protocol: <strong>" + String(httpsUpload ? "HTTPS" : "MQTT") + "</strong></p>";
+  if(httpsUpload && authorization_ && authorization_->supported()) {
+    html += "<h2>Device authorization</h2><p>Hardware identity: "+htmlEscape(authorization_->hardwareId())+"</p>";
+    html += "<p>Status: <strong id=\"authorizationStatus\">"+htmlEscape(authorization_->status())+"</strong></p>";
+    html += "<p id=\"authorizationError\">"+htmlEscape(authorization_->error())+"</p><p>Pairing code: <strong id=\"authorizationCode\">"+htmlEscape(authorization_->userCode())+"</strong></p><p id=\"authorizationExpiry\"></p>";
+    html += "<button type=\"button\" id=\"authorizeDevice\" data-csrf=\""+htmlEscape(authorization_->csrfToken())+"\">Connect / re-authorize device</button>";
+    html += R"rawliteral(<p class="hint">Approve the temporary code in your signed-in app account. This replaces invalid credentials without copying secrets or flashing firmware. Existing ownership must be confirmed in the app. Approval saves the credential and restarts the logger; buffered telemetry is retained.</p><script>
+    (()=>{const button=document.getElementById('authorizeDevice');
+    async function refreshAuthorization(){try{const r=await fetch('/api/authorization',{cache:'no-store'});if(!r.ok)return;const s=await r.json();document.getElementById('authorizationStatus').textContent=s.status.replaceAll('_',' ');document.getElementById('authorizationCode').textContent=s.user_code||'Not requested';document.getElementById('authorizationExpiry').textContent=s.user_code?'Code expires in '+s.expires_in+' seconds':'';document.getElementById('authorizationError').textContent=s.error||'';}catch{}}
+    button.onclick=async()=>{button.disabled=true;try{const r=await fetch('/api/authorization/start',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({csrf:button.dataset.csrf})});if(!r.ok)document.getElementById('authorizationError').textContent='Authorization request rejected';await refreshAuthorization();}catch{document.getElementById('authorizationError').textContent='Logger unavailable';}finally{button.disabled=false;}};setInterval(refreshAuthorization,2000);})();</script>)rawliteral";
+  }
   html += R"rawliteral(<label><input type="checkbox" name="enabled" value="1")rawliteral";
   if (settings_->liveUploadEnabled()) {
     html += " checked";
@@ -163,7 +242,7 @@ void WebUi::handleSettings() {
     html += " checked";
   }
   html += R"rawliteral(> Allow remote management</label><p class="hint">Optional. Pair and configure this logger from the ApexiLabs app. Live upload must remain enabled; disable this locally at any time to restore outbound-only operation.</p>)rawliteral";
-  if (settings_->remoteManagementEnabled() && !managementPairingCode_.isEmpty()) {
+  if ((!httpsUpload || !authorization_ || !authorization_->supported()) && settings_->remoteManagementEnabled() && !managementPairingCode_.isEmpty()) {
     html += "<p>Temporary pairing code: <strong class=\"pairing-code\">" +
             htmlEscape(managementPairingCode_) + "</strong></p>";
     html += "<p class=\"hint\">Enter only this code in the ApexiLabs app. The app identifies this logger automatically. "
@@ -200,12 +279,12 @@ void WebUi::handleSettings() {
   html += R"rawliteral("></label><p class="hint">POSIX format examples: Perth <code>AWST-8</code>, UTC <code>UTC0</code>, Sydney <code>AEST-10AEDT,M10.1.0,M4.1.0/3</code>.</p><label>Timezone label<input name="tz_label" required maxlength="31" value=")rawliteral";
   html += htmlEscape(settings_->timeZoneLabel());
   html += R"rawliteral("></label><button type="submit">Save and restart</button></form><p><a href="/">Back to status</a></p></body></html>)rawliteral";
-  server_.send(200, "text/html", html);
+  sendLogged(200, "text/html", loggerBranding(html));
 }
 
 void WebUi::handleSettingsSave() {
   if (!localSettingsEnabled_) {
-    server_.send(410, "text/plain", "Local settings are disabled on ESP32");
+    server_.send(410, "text/plain", "Local settings are disabled; use provisioned device management.");
     return;
   }
   if (!settingsAuthorized()) {
@@ -217,7 +296,7 @@ void WebUi::handleSettingsSave() {
   const bool uploadEnabled = server_.hasArg("enabled");
   const bool remoteManagementEnabled = server_.hasArg("remote_management");
   if (remoteManagementEnabled && !uploadEnabled) {
-    server_.send(400, "text/plain", "Remote management requires live upload");
+    sendLogged(400, "text/plain", "Remote management requires live upload");
     return;
   }
   if (portValue < 1 || portValue > 65535 ||
@@ -232,11 +311,11 @@ void WebUi::handleSettingsSave() {
                        settings_->appliedConfigVersion(),
                        server_.arg("cf_access_client_id"),
                        server_.arg("cf_access_client_secret"))) {
-    server_.send(400, "text/plain", "Invalid settings");
+    sendLogged(400, "text/plain", "Invalid settings");
     return;
   }
 
-  server_.send(200, "text/html",
+  sendLogged(200, "text/html",
                "<!doctype html><meta name=viewport content='width=device-width'><p>Settings saved. The logger is restarting...</p>");
   restartPending_ = true;
   restartRequestedMs_ = millis();
@@ -244,11 +323,12 @@ void WebUi::handleSettingsSave() {
 
 bool WebUi::settingsAuthorized() {
   if (settingsPassword_.isEmpty()) {
-    server_.send(503, "text/plain", "Provision a device-specific settings credential over USB first");
+    sendLogged(503, "text/plain", "Configure APEXI_OTA_PASSWORD before using settings");
     return false;
   }
   if (!server_.authenticate("admin", settingsPassword_.c_str())) {
     server_.requestAuthentication(DIGEST_AUTH, "MDA Logger");
+    systemLog.add("http_auth_challenge",401,2);
     return false;
   }
   return true;
@@ -295,14 +375,15 @@ String WebUi::jsonEscape(const String &value) {
 
 void WebUi::handleDownload() {
   if (logger_ == nullptr || !server_.uri().startsWith("/download/")) {
-    server_.send(404, "text/plain", "Not found");
+    systemLog.add("http_not_found",404,2);
+    sendLogged(404, "text/plain", "Not found");
     return;
   }
 
   const String fileName = server_.uri().substring(strlen("/download/"));
   File file = logger_->openReadOnly(fileName);
   if (!file) {
-    server_.send(404, "text/plain", "File not found");
+    sendLogged(404, "text/plain", "File not found");
     return;
   }
 
@@ -368,8 +449,22 @@ String WebUi::liveJson() const {
   json += "\"last_log_error\":\"" + jsonEscape(state_.system.lastLogError) + "\",";
   json += "\"upload_protocol\":\"" + state_.system.uploadProtocol + "\",";
   json += "\"upload_server\":\"" + jsonEscape(state_.system.uploadServer) + "\",";
+  json += "\"dash_enabled\":" + String(state_.system.dashEnabled ? "true" : "false") + ",";
+  json += "\"dash_connected\":" + String(state_.system.dashConnected ? "true" : "false") + ",";
+  json += "\"dash_status\":\"" + jsonEscape(state_.system.dashStatus) + "\",";
+  json += "\"battery_supported\":" + String(state_.system.batterySupported ? "true" : "false") + ",";
+  json += "\"battery_voltage\":" + (state_.system.batteryValid ? String(state_.system.batteryVoltage, 3) : String("null")) + ",";
+  json += "\"battery_percent\":" + (state_.system.batteryValid ? String(state_.system.batteryPercent) : String("null")) + ",";
+  json += "\"external_power\":" + (state_.system.batterySupported ? String(state_.system.externalPower ? "true" : "false") : String("null")) + ",";
+  json += "\"battery_trend\":\"" + jsonEscape(state_.system.batteryTrend) + "\",";
+  json += "\"battery_state\":\"" + jsonEscape(state_.system.batteryState) + "\",";
   json += "\"upload_session_id\":\"" + state_.system.uploadSessionId + "\",";
   json += "\"upload_sequence\":" + String(state_.system.lastUploadSequence) + ",";
+  json += "\"upload_http_status\":" + String(state_.system.lastUploadHttpStatus) + ",";
+  const auto &perf=state_.system.uploadPerformance;
+  json += "\"upload_performance\":{\"captured\":"+String(perf.captured)+",\"accepted\":"+String(perf.accepted)+",\"capture_rejected\":"+String(perf.captureRejected)+",\"requests\":"+String(perf.requests)+",\"reused\":"+String(perf.reused)+",\"last_request_ms\":"+String(perf.lastRequestMs)+",\"last_sample_epoch\":"+(perf.lastSampleEpoch?String(perf.lastSampleEpoch):String("null"))+",\"batch_enabled\":"+String(perf.batchEnabled?"true":"false")+",\"batch_requests\":"+String(perf.batchRequests)+",\"batch_accepted\":"+String(perf.batchAccepted)+"},";
+  json += "\"upload_evidence_state\":" + String(state_.system.uploadEvidenceState) + ",";
+  json += "\"upload_success_age_ms\":" + (state_.system.uploadSuccessAgeMs==UINT32_MAX?String("null"):String(state_.system.uploadSuccessAgeMs)) + ",";
   json += "\"remote_management_enabled\":" +
           String(state_.system.remoteManagementEnabled ? "true" : "false") + ",";
   json += "\"applied_config_version\":" +
@@ -424,7 +519,7 @@ String WebUi::indexHtml() const {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:,">
-  <title>Motorsport Logger</title>
+  <title>Apexi Logger</title>
   <style>
     :root { --bg:#09131f; --surface:#111d2a; --border:#29394a; --text:#ecf2f8; --muted:#95a8ba; --accent:#6dd6ff; --ok:#73d5a2; --warn:#f4c46c; --bad:#ff8d8d; }
     * { box-sizing: border-box; }
@@ -460,7 +555,7 @@ String WebUi::indexHtml() const {
 </head>
 <body>
   <header>
-    <div><h1>Motorsport Sensor Logger</h1><div class="header-meta" id="stamp">Waiting for data...</div></div>
+    <div><h1>Apexi Logger</h1><div class="header-meta" id="stamp">Waiting for data...</div></div>
     <nav class="actions" aria-label="Logger pages"><a class="action-link" href="/diagnostics">Diagnostics</a><a class="action-link" href="/settings">Settings</a></nav>
   </header>
   <main>
@@ -486,6 +581,13 @@ String WebUi::indexHtml() const {
   <script>
     let csvFilesEnabled = false;
 
+    function normalUploadQueue(system) {
+      return system.upload_enabled && system.upload_connected && system.store_forward_ready &&
+        Number.isInteger(system.store_forward_pending_records) && system.store_forward_pending_records >= 0 && system.store_forward_pending_records <= 2 &&
+        Number.isFinite(system.upload_success_age_ms) && system.upload_success_age_ms >= 0 && system.upload_success_age_ms <= 10000 &&
+        /^Replaying onboard queue: \d+ pending$/.test(system.last_upload_error || '');
+    }
+
     function setState(id, text, tone) {
       const target = document.getElementById(id);
       target.textContent = text;
@@ -497,7 +599,7 @@ String WebUi::indexHtml() const {
       const data = await response.json();
       document.getElementById('stamp').textContent = data.timestamp + ' ' + data.system.time_zone + ' | uptime ' + data.uptime;
       data.sensors.forEach((sensor) => {
-        document.getElementById('sensor-value-' + sensor.id).textContent = sensor.value.toFixed(1) + ' ' + sensor.units;
+        document.getElementById('sensor-value-' + sensor.id).textContent = sensor.value.toFixed(sensor.units === 'bar' ? 2 : 1) + ' ' + sensor.units;
         document.getElementById('sensor-loop-' + sensor.id).textContent = sensor.loop_mA.toFixed(2) + ' mA';
         const fault = document.getElementById('sensor-fault-' + sensor.id);
         fault.textContent = sensor.fault === 'none' ? 'OK' : sensor.fault.toUpperCase();
@@ -511,7 +613,7 @@ String WebUi::indexHtml() const {
       if (data.system.sd_enabled && !data.system.sd_ready) issues.push('Logging: ' + (data.system.last_log_error || 'microSD is not ready'));
       else if (data.system.sd_enabled && data.system.last_log_error) issues.push('Logging: ' + data.system.last_log_error);
       if (data.system.upload_enabled && !data.system.upload_connected) issues.push('Upload: ' + (data.system.last_upload_error || 'upstream server is not connected'));
-      else if (data.system.last_upload_error) issues.push('Upload: ' + data.system.last_upload_error);
+      else if (data.system.last_upload_error && !normalUploadQueue(data.system)) issues.push('Upload: ' + data.system.last_upload_error);
       if (data.system.remote_management_error) issues.push('Remote management: ' + data.system.remote_management_error);
       if (data.system.store_forward_enabled && !data.system.store_forward_ready) issues.push('Queue: ' + (data.system.store_forward_error || 'not ready'));
       else if (data.system.store_forward_error) issues.push('Queue: ' + data.system.store_forward_error);
@@ -560,7 +662,7 @@ String WebUi::indexHtml() const {
         const li = document.createElement('li');
         const a = document.createElement('a');
         a.href = '/download/' + file.name.replace(/^\//, '');
-        a.textContent = file.name + ' (' + file.size + ' B)';
+        a.textContent = file.name + ' (' + (file.size / 1000000).toFixed(2) + ' MB)';
         li.appendChild(a);
         target.appendChild(li);
       });
@@ -582,18 +684,18 @@ String WebUi::indexHtml() const {
 </html>
 )rawliteral";
 
-  return htmlStart + sensorCardsHtml() + htmlEnd;
+  return loggerBranding(htmlStart + sensorCardsHtml() + htmlEnd);
 }
 
 String WebUi::diagnosticsHtml() const {
-  return R"rawliteral(
+  return loggerBranding(R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:,">
-  <title>Logger Diagnostics</title>
+  <title>Apexi Logger Diagnostics</title>
   <style>
     :root { --bg:#09131f; --surface:#111d2a; --border:#29394a; --text:#ecf2f8; --muted:#95a8ba; --accent:#6dd6ff; --ok:#73d5a2; --warn:#f4c46c; --bad:#ff8d8d; }
     * { box-sizing:border-box; }
@@ -619,33 +721,40 @@ String WebUi::diagnosticsHtml() const {
   </style>
 </head>
 <body>
-  <header><div><h1>Logger Diagnostics</h1><div class="header-meta" id="stamp">Waiting for data...</div></div><nav class="actions" aria-label="Logger pages"><a class="action-link" href="/">Dashboard</a><a class="action-link" href="/settings">Settings</a></nav></header>
+  <header><div><h1>Apexi Logger Diagnostics</h1><div class="header-meta" id="stamp">Waiting for data...</div></div><nav class="actions" aria-label="Logger pages"><a class="action-link" href="/">Dashboard</a><a class="action-link" href="/logs">System logs</a><a class="action-link" href="/settings">Settings</a></nav></header>
   <main><section class="grid">
-    <div class="card"><div class="label">Identity &amp; provisioning</div><div class="status detail-row"><span>Logger ID</span><span id="deviceId">--</span></div><div class="status detail-row"><span>Name</span><span id="deviceName">--</span></div><div class="status"><span>Provisioning</span><span class="state" id="provisioningStatus">--</span></div><div class="status"><span>Hardware revision</span><span id="hardwareRevision">--</span></div><div class="status"><span>Provisioned at</span><span id="provisionedAt">--</span></div><div class="status detail-row"><span>Provisioning error</span><span id="provisioningError">No errors</span></div></div>
+    <div class="card"><div class="label">Battery &amp; power</div><div class="status"><span>Estimated charge</span><span id="batteryPercent">--</span></div><div class="status"><span>Battery voltage</span><span id="batteryVoltage">--</span></div><div class="status"><span>USB / 5V power</span><span id="externalPower">--</span></div><div class="status"><span>Voltage trend</span><span id="batteryTrend">--</span></div><div class="status detail-row"><span>Charging indicator</span><span id="batteryState">--</span></div><p>Estimate for a 1S 4.2V LiPo, not a fuel gauge. Charging and load affect accuracy. Trend needs two minutes; voltage cannot confirm charge completion or battery presence.</p></div>
+    <div class="card"><div class="label">Apexi Dash</div><div class="status"><span>Bluetooth connection</span><span class="state" id="dashStatus">--</span></div><div class="status"><span>Link status</span><span id="dashDetail">--</span></div></div>
     <div class="card"><div class="label">Connectivity</div><div class="status"><span>Server</span><span class="state" id="uploadStatus">--</span></div><div class="status"><span>Protocol</span><span id="uploadProtocol">--</span></div><div class="status"><span>Wi-Fi</span><span id="wifiStatus">--</span></div><div class="status"><span>Remote management</span><span class="state" id="remoteManagementStatus">--</span></div><div class="status"><span>Applied configuration</span><span id="configVersion">--</span></div><div class="status detail-row"><span>Upstream endpoint</span><span id="uploadServer">--</span></div></div>
-    <div class="card"><div class="label">Hardware &amp; time</div><div class="status"><span>ADC</span><span class="state" id="adcStatus">--</span></div><div class="status"><span>RTC</span><span class="state" id="rtcStatus">--</span></div><div class="status"><span>Last time sync</span><span id="rtcLastSync">--</span></div><div class="status"><span>Secure boot</span><span class="state" id="secureBootStatus">--</span></div><div class="status"><span>Flash encryption</span><span class="state" id="flashEncryptionStatus">--</span></div><div class="status"><span>Production gate</span><span class="state" id="productionSecurityStatus">--</span></div><div class="status"><span>OTA updates</span><span class="state" id="otaStatus">--</span></div><div class="status"><span>OTA boot health</span><span id="otaBootHealth">--</span></div></div>
-    <div class="card"><div class="label">Storage</div><div class="status"><span>Onboard queue</span><span id="queueStatus">--</span></div><div class="status"><span>Queue capacity</span><span id="queueCapacity">--</span></div><div class="status"><span>Dropped records</span><span id="queueDropped">--</span></div><div class="status"><span>Corruption repairs</span><span id="queueCorruption">--</span></div><div class="status"><span>Quarantined bytes</span><span id="queueQuarantined">--</span></div><div class="status"><span>SD logging</span><span class="state" id="sdStatus">--</span></div><div class="status detail-row"><span>Current log file</span><span id="logFile">--</span></div></div>
-    <div class="card"><div class="label">Transport</div><div class="status detail-row"><span>Upload session</span><span id="uploadSession">--</span></div><div class="status"><span>Upload sequence</span><span id="uploadSequence">--</span></div><div class="status"><span>Capture drops this boot</span><span id="captureDrops">--</span></div><div class="status detail-row"><span>Oldest queued record</span><span id="queueOldest">--</span></div><div class="status"><span>Oldest record age</span><span id="queueOldestAge">--</span></div><div class="status detail-row"><span>Upload error</span><span id="uploadError">No errors</span></div><div class="status detail-row"><span>Remote-management error</span><span id="remoteManagementError">No errors</span></div></div>
+    <div class="card"><div class="label">Hardware &amp; time</div><div class="status"><span>ADC</span><span class="state" id="adcStatus">--</span></div><div class="status"><span>RTC</span><span class="state" id="rtcStatus">--</span></div><div class="status"><span>Last time sync</span><span id="rtcLastSync">--</span></div><div class="status"><span>OTA updates</span><span class="state" id="otaStatus">--</span></div></div>
+    <div class="card"><div class="label">Storage</div><div class="status"><span>Onboard queue</span><span id="queueStatus">--</span></div><div class="status"><span>Queue capacity</span><span id="queueCapacity">--</span></div><div class="status"><span>Dropped records</span><span id="queueDropped">--</span></div><div class="status"><span>SD logging</span><span class="state" id="sdStatus">--</span></div><div class="status detail-row"><span>Current log file</span><span id="logFile">--</span></div></div>
+    <div class="card"><div class="label">Transport</div><div class="status detail-row"><span>Upload session</span><span id="uploadSession">--</span></div><div class="status"><span>Upload sequence</span><span id="uploadSequence">--</span></div><div class="status detail-row"><span>Upload error</span><span id="uploadError">No errors</span></div><div class="status detail-row"><span>Remote-management error</span><span id="remoteManagementError">No errors</span></div></div>
     <div class="card"><div class="label">Hardware errors</div><div class="status detail-row"><span>Queue</span><span id="queueError">No errors</span></div><div class="status detail-row"><span>RTC</span><span id="rtcError">No errors</span></div><div class="status detail-row"><span>Logging</span><span id="logError">No errors</span></div></div>
     <div class="card"><div class="label">Sensors</div><div id="sensorDiagnostics">--</div></div>
   </section></main>
   <script>
     function text(id,value){document.getElementById(id).textContent=value;}
     function state(id,value,tone){const el=document.getElementById(id);el.textContent=value;el.className='state'+(tone?' '+tone:'');}
+    function serverHostname(endpoint){
+      if(!endpoint) return 'Not configured';
+      try { return new URL(endpoint.includes('://')?endpoint:'http://'+endpoint).hostname || 'Not configured'; }
+      catch(error) { return 'Invalid server'; }
+    }
     async function refresh(){
       const response=await fetch('/api/live'); const data=await response.json();
       text('stamp',data.timestamp+' '+data.system.time_zone+' | uptime '+data.uptime);
-      text('deviceId',data.system.device_id||'--'); text('deviceName',data.system.device_name||'--'); text('hardwareRevision',data.system.hardware_revision||'--'); text('provisionedAt',data.system.provisioned_at||'--'); const provisioned=data.system.provisioning_status==='provisioned'; state('provisioningStatus',(data.system.provisioning_status||'unknown').toUpperCase(),provisioned?'ok':'warn'); text('provisioningError',data.system.provisioning_error||'No errors');
       const upload=data.system.upload_enabled?(data.system.upload_connected?'CONNECTED':'WAITING'):'DISABLED'; state('uploadStatus',upload,upload==='CONNECTED'?'ok':(upload==='WAITING'?'warn':''));
-      text('uploadProtocol',data.system.upload_protocol.toUpperCase()); text('wifiStatus',data.system.wifi_mode+' '+data.system.ip_address); text('uploadServer',data.system.upload_server||'Not configured');
+      text('uploadProtocol',data.system.upload_protocol.toUpperCase()); text('wifiStatus',data.system.wifi_mode+' '+data.system.ip_address); text('uploadServer',serverHostname(data.system.upload_server));
+      const dash=data.system.dash_enabled?(data.system.dash_connected?'CONNECTED':'DISCONNECTED'):'DISABLED'; state('dashStatus',dash,dash==='CONNECTED'?'ok':(dash==='DISCONNECTED'?'warn':'')); text('dashDetail',data.system.dash_status||'--');
+      text('batteryPercent',Number.isFinite(data.system.battery_percent)?'~'+data.system.battery_percent+'%':'Unavailable');
+      text('batteryVoltage',Number.isFinite(data.system.battery_voltage)?data.system.battery_voltage.toFixed(2)+' V':'--');
+      text('externalPower',data.system.battery_supported?(data.system.external_power?'Present':'Absent'):'Unsupported');
+      text('batteryTrend',data.system.battery_trend||'--'); text('batteryState',data.system.battery_state||'Unsupported');
       state('remoteManagementStatus',data.system.remote_management_enabled?'ENABLED':'DISABLED',data.system.remote_management_enabled?'ok':''); text('configVersion','v'+data.system.applied_config_version+' '+(data.system.remote_management_status||'ready'));
       state('adcStatus',data.system.adc_ready?'READY':'FAULT',data.system.adc_ready?'ok':'bad');
-      state('secureBootStatus',data.system.secure_boot_enabled?'ENABLED':'DISABLED',data.system.secure_boot_enabled?'ok':'warn'); const flashMode=data.system.flash_encryption_release_mode?'RELEASE':(data.system.flash_encryption_enabled?'DEVELOPMENT':'DISABLED'); state('flashEncryptionStatus',flashMode,data.system.flash_encryption_release_mode?'ok':'warn'); const productionReady=data.system.production_security_ready; state('productionSecurityStatus',data.system.production_security_required?(productionReady?'READY':'BLOCKED'):'DEVELOPMENT',data.system.production_security_required?(productionReady?'ok':'bad'):'warn');
       const rtc=data.system.rtc_enabled?(data.system.rtc_ready?(data.system.rtc_synced?'NTP SYNCED':'HOLDOVER'):'FAULT'):'DISABLED'; state('rtcStatus',rtc,rtc==='FAULT'?'bad':(rtc==='NTP SYNCED'?'ok':'warn')); text('rtcLastSync',data.system.rtc_last_sync||'--');
       const ota=data.system.ota_enabled?(data.system.ota_ready?'READY':'LOCKED'):'DISABLED'; state('otaStatus',ota,ota==='READY'?'ok':(ota==='LOCKED'?'warn':''));
-      text('otaBootHealth',data.system.ota_boot_health||'Unknown');
-      text('queueStatus',data.system.store_forward_enabled?(data.system.store_forward_ready?data.system.store_forward_pending_records+' pending / '+Math.round(data.system.store_forward_pending_bytes/1024)+' KiB':'FAULT'):'DISABLED'); text('queueCapacity',Math.round(data.system.store_forward_capacity_bytes/1024)+' KiB'); text('queueDropped',data.system.store_forward_dropped_records); text('queueCorruption',data.system.store_forward_corruption_events); text('queueQuarantined',data.system.store_forward_quarantined_bytes);
-      const oldest=data.system.store_forward_oldest; text('queueOldest',oldest?oldest.session_id+' / #'+oldest.sequence+' / '+oldest.timestamp:'None or unavailable'); text('queueOldestAge',oldest&&oldest.age_seconds!==null?oldest.age_seconds+' s':'Unknown'); text('captureDrops',data.system.upload_capture_drops??0);
+      text('queueStatus',data.system.store_forward_enabled?(data.system.store_forward_ready?data.system.store_forward_pending_records+' pending / '+Math.round(data.system.store_forward_pending_bytes/1024)+' KiB':'FAULT'):'DISABLED'); text('queueCapacity',Math.round(data.system.store_forward_capacity_bytes/1024)+' KiB'); text('queueDropped',data.system.store_forward_dropped_records);
       const sd=data.system.sd_enabled?(data.system.sd_ready?'READY':'FAULT'):'DISABLED'; state('sdStatus',sd,sd==='READY'?'ok':(sd==='FAULT'?'bad':'')); text('logFile',data.system.current_log_file||'--');
       text('uploadSession',data.system.upload_session_id||'--'); text('uploadSequence',data.system.upload_sequence); text('uploadError',data.system.last_upload_error||'No errors'); text('remoteManagementError',data.system.remote_management_error||'No errors'); text('queueError',data.system.store_forward_error||'No errors'); text('rtcError',data.system.rtc_error||'No errors'); text('logError',data.system.last_log_error||'No errors');
       const sensors=document.getElementById('sensorDiagnostics'); sensors.innerHTML=''; data.sensors.forEach((sensor)=>{const row=document.createElement('div');row.className='status';const name=document.createElement('span');name.textContent=sensor.name+' ('+sensor.loop_mA.toFixed(2)+' mA)';const fault=document.createElement('span');fault.className='state '+(sensor.fault==='none'?'ok':'bad');fault.textContent=sensor.fault==='none'?'OK':sensor.fault.toUpperCase();row.append(name,fault);sensors.appendChild(row);});
@@ -654,5 +763,5 @@ String WebUi::diagnosticsHtml() const {
     refreshSafely(); setInterval(refreshSafely,1000);
   </script>
 </body></html>
-)rawliteral";
+)rawliteral");
 }

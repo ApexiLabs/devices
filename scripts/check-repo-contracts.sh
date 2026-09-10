@@ -41,12 +41,13 @@ for macro in MDA_PIN_SPI_MISO MDA_PIN_SPI_MOSI MDA_PIN_SPI_SCLK PIN_TFT_CS PIN_T
   grep -q "#define $macro" "$ROOT_DIR/include/PinDefinitions.h" || fail "missing $macro in include/PinDefinitions.h"
 done
 
-grep -q "#define TFT_MISO MDA_PIN_SPI_MISO" "$ROOT_DIR/include/TFT_Setup.h" || fail "TFT_Setup.h is not wired to MDA_PIN_SPI_MISO"
-grep -q "#define TFT_MOSI MDA_PIN_SPI_MOSI" "$ROOT_DIR/include/TFT_Setup.h" || fail "TFT_Setup.h is not wired to MDA_PIN_SPI_MOSI"
-grep -q "#define TFT_SCLK MDA_PIN_SPI_SCLK" "$ROOT_DIR/include/TFT_Setup.h" || fail "TFT_Setup.h is not wired to MDA_PIN_SPI_SCLK"
-grep -q "#define TFT_CS   PIN_TFT_CS" "$ROOT_DIR/include/TFT_Setup.h" || fail "TFT_Setup.h is not wired to PIN_TFT_CS"
-grep -q "#define TFT_DC   PIN_TFT_DC" "$ROOT_DIR/include/TFT_Setup.h" || fail "TFT_Setup.h is not wired to PIN_TFT_DC"
-grep -q "#define TFT_RST  PIN_TFT_RST" "$ROOT_DIR/include/TFT_Setup.h" || fail "TFT_Setup.h is not wired to PIN_TFT_RST"
+LOGGER_TFT_SETUP="$ROOT_DIR/include/LoggerDisplayTFTSetup.h"
+grep -q "#define TFT_MISO MDA_PIN_SPI_MISO" "$LOGGER_TFT_SETUP" || fail "LoggerDisplayTFTSetup.h is not wired to MDA_PIN_SPI_MISO"
+grep -q "#define TFT_MOSI MDA_PIN_SPI_MOSI" "$LOGGER_TFT_SETUP" || fail "LoggerDisplayTFTSetup.h is not wired to MDA_PIN_SPI_MOSI"
+grep -q "#define TFT_SCLK MDA_PIN_SPI_SCLK" "$LOGGER_TFT_SETUP" || fail "LoggerDisplayTFTSetup.h is not wired to MDA_PIN_SPI_SCLK"
+grep -q "#define TFT_CS   PIN_TFT_CS" "$LOGGER_TFT_SETUP" || fail "LoggerDisplayTFTSetup.h is not wired to PIN_TFT_CS"
+grep -q "#define TFT_DC   PIN_TFT_DC" "$LOGGER_TFT_SETUP" || fail "LoggerDisplayTFTSetup.h is not wired to PIN_TFT_DC"
+grep -q "#define TFT_RST  PIN_TFT_RST" "$LOGGER_TFT_SETUP" || fail "LoggerDisplayTFTSetup.h is not wired to PIN_TFT_RST"
 
 grep -q "docs/hardware-setup.md" "$ROOT_DIR/README.md" || fail "README.md does not point to docs/hardware-setup.md"
 grep -q "docs/repo-contracts.md" "$ROOT_DIR/AGENTS.md" || fail "AGENTS.md does not point to docs/repo-contracts.md"
@@ -70,5 +71,19 @@ grep -q 'check_production_security.py' "$ROOT_DIR/docs/production-security.md" |
 if git -C "$ROOT_DIR" ls-files --error-unmatch -- include/AppSecrets.h >/dev/null 2>&1; then
   fail "include/AppSecrets.h contains local credentials and must not be tracked"
 fi
+
+
+for target in logger-nodemcuv2 logger-esp32 logger-tinyc6 dash-waveshare-s3-128; do
+  grep -q "^\\[env:$target\\]" "$ROOT_DIR/platformio.ini" || fail "missing target $target"
+  for workflow in "$ROOT_DIR/.github/workflows/build-firmware.yml" "$ROOT_DIR/.github/workflows/release.yml"; do
+    grep -q -- "-e $target" "$workflow" || fail "$(basename "$workflow") does not build $target"
+    grep -q ".pio/build/$target/firmware.bin" "$workflow" || fail "$(basename "$workflow") does not package $target"
+  done
+done
+for workflow in "$ROOT_DIR/.github/workflows/build-firmware.yml" "$ROOT_DIR/.github/workflows/release.yml"; do
+  grep -q -- "-e logger-esp32-production-candidate" "$workflow" || fail "missing production candidate build"
+  grep -q "test_signed_release_crypto.py" "$workflow" || fail "missing real signature verification tests"
+  grep -q "rich-click<2" "$workflow" || fail "missing esptool 5 CLI dependency"
+done
 
 echo "repo-contracts: ok"

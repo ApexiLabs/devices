@@ -1,5 +1,22 @@
 #include "Dashboard.h"
 
+#if defined(MDA_HEADLESS_DISPLAY)
+
+bool Dashboard::begin() {
+  ready_ = false;
+  return false;
+}
+
+bool Dashboard::isReady() const { return false; }
+
+void Dashboard::render(const AppState &) {}
+
+void Dashboard::nextScreen() {}
+
+Dashboard::Screen Dashboard::currentScreen() const { return screen_; }
+
+#else
+
 #include <math.h>
 
 namespace {
@@ -86,7 +103,7 @@ uint8_t Dashboard::diagnosticsPageCount() const {
 
 void Dashboard::drawMainScreen(const AppState &state) {
   tft_.setTextColor(TFT_WHITE, AppConfig::kDisplay.backgroundColor);
-  tft_.drawString("Motorsport Data Logger", 240, 20, 4);
+  tft_.drawString("Apexi Logger", 240, 20, 4);
   tft_.drawString(state.timestamp, 240, 46, 2);
 
   struct GaugeLayout {
@@ -281,3 +298,5 @@ uint16_t Dashboard::valueColor(const SensorSnapshot &sensor) const {
   }
   return TFT_GREENYELLOW;
 }
+
+#endif

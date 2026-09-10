@@ -145,6 +145,6 @@ an untrusted network and lower only on a demonstrably isolated development LAN.
 - OTA implementation and `docs/releases.md`: add signature enforcement,
   pending-verification health checks, known-good rollback and carefully governed
   anti-rollback.
-- `src/WebUi.cpp`, `src/main.cpp`, and transport tests: verify local settings stay
+- `src/WebUi.cpp`, `src/logger_main.cpp`, and transport tests: verify local settings stay
   disabled, diagnostics remain secret-free, and desired state cannot cross
   device/version boundaries.

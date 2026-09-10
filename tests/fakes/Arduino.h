@@ -14,6 +14,7 @@ class String {
   size_t length() const { return value_.length(); }
   const char *c_str() const { return value_.c_str(); }
   void reserve(size_t capacity) { value_.reserve(capacity); }
+  bool concat(const char *value,size_t length) { value_.append(value,length);return true; }
   String &operator+=(char value) {
     value_ += value;
     return *this;
@@ -34,3 +35,4 @@ template <typename T>
 constexpr T min(const T left, const T right) {
   return left < right ? left : right;
 }
+inline void yield() {}

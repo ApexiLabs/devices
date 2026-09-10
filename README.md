@@ -1,19 +1,47 @@
-# Motorsport Data Acquisition
+# Apexi Logger and Apexi Dash
 
-Arduino/PlatformIO firmware for a configurable 4-20 mA motorsport logger and dashboard, targeting classic ESP32 DevKit/WROOM-class boards and the NodeMCU 1.0 / ESP-12E DevKit V2.
+Logger Dashboard, Diagnostics, Settings and System logs share the app's ApexiLabs mark and wordmark. The embedded logo works offline; Inter uses the app's Google Fonts stylesheet with a system-font fallback.
+
+The dashboard CSV list displays file sizes in decimal MB to two decimal places.
+Logger web sensor readings use two decimal places for pressure in bar and one for other units; this changes presentation only, not logged data or sensor accuracy.
+Logger-to-Dash upload status reports snapshot acceptance separately from connection state: verified app acknowledgement for HTTPS, unconfirmed transport writes for MQTT. Older Dash firmware remains compatible.
+TinyC6 store-and-forward uses the existing default `spiffs`-labelled partition as LittleFS; only wholly erased partitions are initialized automatically. Existing unmountable data is preserved. Upload diagnostics retain the HTTP status and server-acceptance age. The dashboard does not flag a healthy, recently acknowledged queue of up to two records as a fault; diagnostics still show the queue.
+Owner-approved ESP32 credential provisioning and recovery are implemented for development; see [device authorization](docs/device-authorization.md) for verified behaviour and remaining release gates.
+
+ESP32 HTTPS capture/replay now uses a shared background worker and reusable same-origin connections; see [HTTPS replay](docs/https-replay.md) for queue ownership, throughput measurements and capability-gated batching and remaining qualification. ESP8266 remains synchronous.
+
+System events are stored separately from sensor CSVs, with Dash forwarding,
+an authenticated local viewer, and optional ESP32 HTTPS remote downloads.
+See [System logs and remote downloads](docs/system-logs.md) for limits and setup.
+
+Both firmware components live in `motorsport-data-acquisition` and share **Dash Link**, the BLE connection protocol.
+
+| Component | PlatformIO target | Entry point |
+| --- | --- | --- |
+| Apexi Logger — TinyC6 | `logger-tinyc6` | `src/logger_main.cpp` |
+| Apexi Logger — classic ESP32 | `logger-esp32` | `src/logger_main.cpp` |
+| Apexi Logger — NodeMCU (legacy, no BLE) | `logger-nodemcuv2` | `src/logger_main.cpp` |
+| Apexi Dash — Waveshare S3 1.28-inch | `dash-waveshare-s3-128` | `src/dash_main.cpp` |
+
+These replace the previous `tinyc6`, `esp32dev`, `nodemcuv2`, and `waveshare_dash` environment names. The legacy OTA environment is now `logger-nodemcuv2-ota`. The default remains the NodeMCU logger; select the target explicitly for either ESP32 board.
+
+Release assets use `apexi-<target>-firmware.bin`, `apexi-<target>-firmware.elf`, and, for ESP32 targets, `apexi-<target>-factory.bin`. BLE discovery identifies the logger as `APEXI-LOGGER` and the dash as `APEXI-DASH`. New ESP32 loggers use hardware-derived identity, with an app-issued canonical recorder ID after authorization. Existing `mda-logger` history is retained only by explicit owner-approved migration; new boards do not reuse it. The `mda-logger/1` BLE handshake remains compatible. The dash status API now calls its handshake state `loggerReady`.
+
+Arduino/PlatformIO firmware for a configurable 4-20 mA motorsport logger and its separate Waveshare ESP32-S3 round dash, targeting the Unexpected Maker TinyC6, classic ESP32 DevKit/WROOM-class boards, and the NodeMCU 1.0 / ESP-12E DevKit V2.
+
+See [integration and compatibility](docs/logger-dash-integration.md) for the consolidated PR scope, identity handling, and remaining qualification.
 
 ## Features
 - Reads a configurable set of 4-20 mA sensors through an ADS1115-based analog front end
-- Displays live gauges and diagnostics on a 480x320 SPI TFT
+- Connects ESP32-family loggers to a Waveshare ESP32-S3-Touch-LCD-1.28 dash over BLE, retrying every five seconds when the dash is unavailable
+- Builds separate `dash-waveshare-s3-128` firmware that shows the initial BLE connection state and serves its own commissioning web UI
 - Logs CSV data to microSD with RTC timestamps when RTC hardware is fitted
 - Serves a lightweight Wi-Fi dashboard and CSV download endpoints
 - Publishes live telemetry over MQTT or authenticated HTTPS when station Wi-Fi and upstream settings are configured
-- Persists ESP32 HTTPS snapshots before transmission and replays them oldest-first through a nonblocking network worker
+- Buffers retryable HTTPS failures in a persistent circular onboard-flash queue on the TinyC6 and 16 MB ESP32 targets and replays them oldest-first after recovery
 - Lights the NodeMCU built-in LED steadily once firmware setup begins
 - Keeps pin mapping, sensor calibration, and refresh rates in one config file
 - Synchronises the RV-3028 from NTP at every networked boot and hourly thereafter, while retaining RTC holdover when offline
-- Derives an immutable per-board ESP32 identity and loads owner credentials from an identity-bound USB provisioning record
-- Disables fallback AP, password OTA, and local HTTP settings on ESP32; production-candidate networking/update gates also require secure SDK, encrypted storage and reviewed encrypted-queue qualification
 
 ## Required hardware
 
@@ -32,77 +60,87 @@ Primary source files:
 - [`include/AppConfig.h`](include/AppConfig.h)
 - [`include/PinDefinitions.h`](include/PinDefinitions.h)
 - [`include/LiveUpload.h`](include/LiveUpload.h)
-- [`src/main.cpp`](src/main.cpp)
+- [`src/logger_main.cpp`](src/logger_main.cpp)
 - [`src/LiveUpload.cpp`](src/LiveUpload.cpp)
+- [`src/DashLink.cpp`](src/DashLink.cpp)
+- [`src/dash_main.cpp`](src/dash_main.cpp)
 - [`docs/hardware-setup.md`](docs/hardware-setup.md)
 - [`docs/repo-contracts.md`](docs/repo-contracts.md)
 - [`docs/production-hardware-qualification.md`](docs/production-hardware-qualification.md)
 
 ## Build and flash
 1. Install PlatformIO Core or use the PlatformIO VS Code extension.
-2. Wire the NodeMCU or classic ESP32 DevKit using the matching GPIO table in [`docs/hardware-setup.md`](docs/hardware-setup.md), then review [`include/PinDefinitions.h`](include/PinDefinitions.h).
-3. Review sensor ranges, timing values, live upload settings, and optional hardware toggles in [`include/AppConfig.h`](include/AppConfig.h). For production ESP32 hardware, follow the identity-bound [provisioning runbook](docs/provisioning.md); the ignored `include/AppSecrets.h` path is retained only for ESP8266/development builds.
+2. Wire the NodeMCU, TinyC6, or classic ESP32 DevKit using the matching GPIO table in [`docs/hardware-setup.md`](docs/hardware-setup.md), then review [`include/PinDefinitions.h`](include/PinDefinitions.h).
+3. Review sensor ranges, timing values, live upload settings, and optional hardware toggles in [`include/AppConfig.h`](include/AppConfig.h). Copy `include/AppSecrets.example.h` to the ignored `include/AppSecrets.h` and set Wi-Fi plus MQTT or HTTPS credentials there.
 4. Run [`scripts/verify-repo.sh`](scripts/verify-repo.sh) `--fast` for host-side verification and contract checks, and `--full` when the local PlatformIO toolchain is available.
-5. Build and upload with `pio run -t upload --upload-port /dev/cu.usbserial-10`, replacing the port when needed.
+5. Build and upload the required environment with `pio run -e logger-tinyc6 -t upload --upload-port /dev/cu.usbmodem1101`, replacing the environment and port when needed.
 6. Open the serial monitor at 115200 baud with `pio device monitor`. If a CH340-based board stays in reset, open the port with DTR and RTS inactive or press the board's `RST` button once.
 
-## Release artifacts
+### Waveshare dash firmware
 
-Tagged releases currently publish development artifacts. They are immutable and checksummed, but are not signed production images. NodeMCU/ESP8266 is not a supported production target, and the bundled ESP32 Arduino SDK fails the production-security audit. See [ESP32 production security and recovery](docs/production-security.md) before interpreting an artifact, and [Firmware releases and rollback](docs/releases.md) for publication evidence.
+Dash uses the app's ApexiLabs mark and Inter font (Google Fonts, with a system fallback offline). Header navigation opens the dedicated authenticated Settings view for LCD readings, refresh interval, colours, and alarms. Header time is explicitly browser time and zone, beside device uptime. Battery, OTA, and log-retention notes use expandable help tooltips; firmware updates occupy one grid column. Download human-readable, uptime-stamped troubleshooting records from `/api/diagnostics.log`; the JSON `/api/diagnostics` remains available for tools.
 
-The APE-82 foundation adds an internal signed inactive-slot writer, production-only boot-health confirmation/rollback, and public-key verification of externally signed/reproduced artifact evidence. It does not expose an OTA delivery endpoint, perform signing/eFuse enrollment, or approve a production build. Secure SDK/partition migration, encrypted LittleFS compatibility, authenticated delivery/recovery and hardware acceptance remain required.
+The small LCD prioritises one or two large readings. Hide either display slot for a single centred value; keep both active for two stacked values. Buffered rendering skips unchanged frames to avoid erase/redraw flicker. Sensor selection and refresh timing remain in the Dash web UI.
+
+The gauge-inspired black face uses fixed-size, highlighted arcs that fade blue → green → yellow → red through per-sensor colour points. Fresh readings are white; stale/held values stay amber with muted arcs. Optional low/high thresholds produce a red alarm band only when fresh, valid readings breach an enabled limit. Configure colour points and alarm limits in Dash `/settings`; alarms start disabled. See [gauge configuration](docs/hardware-setup.md#configurable-gauge-colours-and-alarms).
+
+The web UI pairs the native-size LCD preview with sensor readings in single-column cards on desktop, stacking them on mobile. Link status uses compact text; background polling leaves the manual refresh button visually stable.
+
+The preview keeps only its live capture status and controls; sensor timing is summarised as the configured refresh interval and frequency.
+
+Temperature readings are displayed as °C; the transport and saved-rule unit remains `C` for compatibility.
+Gauge numerals use a slight italic slant with larger, upright units for readability on the 240-pixel display.
+The coloured arcs extend to the screen edge without a separate outer border ring.
+An active low/high alarm overrides only that sensor's arc and label to red; clearing the alarm restores its configured colour gradient.
+Each arc is one solid band without an inset highlight seam. Dash pressure readings in bar use two decimals on the LCD and web UI, including held readings; temperature retains one decimal.
+Dash's web UI also includes a Logger-style Battery & power card for its own 1S LiPo: GPIO1 voltage, approximate percentage and voltage trend. Unsupported USB power and charging rows are omitted. This is independent of Logger battery telemetry.
+The small right-hand status dot reports Logger telemetry upload evidence: green for server-accepted snapshots, amber for unconfirmed MQTT sends, red for failed upload, grey for disabled/unknown/stale status. The web UI provides matching text. Both Logger and Dash need the optional upload-status protocol; see hardware setup for acknowledgement and freshness limits.
+USB diagnostics identified a status-API stack overflow in the initial gauge build; the current diagnostic variant moves its JSON workspace to the heap. See the hardware setup notes for the bench results and remaining qualification.
+
+Dash troubleshooting logging is enabled in RAM. Use **Dash Link → Download troubleshooting log** before reboot/OTA to save receive counters, sample gaps, and the latest 64 state transitions. See [diagnostic interpretation](docs/hardware-setup.md#dash-troubleshooting-log).
+
+LCD and web readings hold the last valid number in amber during stale data, disconnection, or sensor faults, with an explicit status label. Held numbers are never marked live; a sensor with no valid history still shows no value. History resets on Dash reboot.
+
+The **Live LCD** web card mirrors the actual 240×240 render buffer for remote layout checks. It downloads changed frames at most once per second, supports pause/resume and opening a snapshot, and marks retained images stale if Dash becomes unreachable. It shows rendered pixels, not a camera view of the physical panel.
+
+Dash joins the station network from the ignored `include/AppSecrets.h`, keeping its recovery AP available. Its LCD uses a black background, and its live web UI matches Logger's theme. Password-protected OTA uses `APEXI_OTA_PASSWORD`; after the first USB installation, build Dash and run `./.venv/bin/python scripts/upload-dash-ota.py <dash-ip>`. See [Dash commissioning and OTA](docs/hardware-setup.md#waveshare-esp32-s3-dash) for setup, status fields, and network requirements.
+
+Build and flash the separate dash image with:
+
+```sh
+pio run -e dash-waveshare-s3-128
+pio run -e dash-waveshare-s3-128 -t upload --upload-port /dev/cu.usbmodem1101
+```
+
+PlatformIO writes an update image to `.pio/build/dash-waveshare-s3-128/firmware.bin` and a combined first-flash image to `.pio/build/dash-waveshare-s3-128/firmware.factory.bin`. On boot, the dash advertises the Apexi BLE service and creates the password-protected `APEXI-DASH` Wi-Fi access point. Join it with password `apexi-dash` and open `http://192.168.4.1` for the initial connection-status page. The logger firmware scans at boot and, while disconnected, retries using `AppConfig::kDashLink.retryIntervalMs` (five seconds by default). Logger also publishes sensor readings over BLE. Use Dash’s password-protected `/settings` page to choose the two LCD readings and set their refresh interval (250–5000 ms). Choices survive reboot; missing or faulted sensors show unavailable values.
 
 ## Wi-Fi firmware updates
 
-Password-protected Arduino OTA is available only on the ESP8266 development target. ESP32 disables it because a reusable password does not provide signed-image enforcement or encrypted transport. The local `/api/live` response reports `ota_enabled` and `ota_ready` without exposing credentials.
+The ESP8266 supports password-protected Arduino OTA updates while connected in station mode. Set a strong, unique `APEXI_OTA_PASSWORD` in the ignored `include/AppSecrets.h`; OTA remains locked when that value is empty. The local `/api/live` response reports `ota_enabled` and `ota_ready` so update availability can be checked without exposing the password.
 
-The first ESP8266 OTA-capable firmware must be installed over USB. After that, build and upload only on a trusted development network with the helper script, which reads the password from the ignored secrets header without printing it:
+The first OTA-capable firmware must be installed over USB. After that, build and upload on the same trusted network with the helper script, which reads the password from the ignored secrets header without printing it:
 
 ```sh
-./scripts/upload-ota.sh mda-aabbccddeeff.local
+./scripts/upload-ota.sh mda-logger.local
 ```
 
-An IP address can be supplied instead if `.local` discovery is unavailable. Do not commit the password or expose Arduino OTA beyond the trusted device network. It is never a production update mechanism.
+An IP address can be supplied instead if `.local` discovery is unavailable. Do not commit the password or expose Arduino OTA beyond the trusted device network. OTA provides authenticated transfer, not transport encryption.
 
 ## Live streaming
 
-The firmware includes a live telemetry publisher for near-real-time upload. MQTT remains the normal LAN transport. Production ESP32 credentials are installed with the [provisioning runbook](docs/provisioning.md), without rebuilding the factory image. The ignored secrets header remains a development compatibility path. HTTPS validates the public certificate chain against ISRG Root X1 and posts to the telemetry app compatibility endpoint; it never disables TLS verification or redirects gateway ownership into firmware.
+The firmware includes a live telemetry publisher for near-real-time upload. MQTT remains the normal LAN transport. Set `APEXI_HTTPS_UPLOAD_ENABLED=1` to use the Access-protected HTTPS compatibility transport when the broker is not directly reachable. Configure the Cloudflare Access service-token pair and the scoped app device token only in the ignored `include/AppSecrets.h` created from [`include/AppSecrets.example.h`](include/AppSecrets.example.h). HTTPS validates the public certificate chain against ISRG Root X1; it never disables TLS verification.
 
-The local dashboard separates connectivity, hardware, storage, and diagnostic state. It shows the active upstream endpoint, whether the server is connected, whether remote management is enabled locally, the applied remote-configuration version, and non-secret Secure Boot/flash-encryption posture. ESP32 local settings GET and POST return HTTP 410; configure it using identity-bound USB provisioning or the optional allow-listed app management path. The legacy digest-authenticated `/settings` page remains only on ESP8266 development firmware. Neither diagnostics nor `/api/live` returns Wi-Fi, OTA, MQTT, Cloudflare, app bearer, recovery, encryption, or signing secrets.
+The local dashboard separates connectivity, hardware, storage, and diagnostic state. It shows the active upstream endpoint, whether the server is connected, whether remote management is enabled locally, and the applied remote-configuration version. Open `/settings` to change the server host, port, live-upload enable flag, primary and secondary NTP servers, POSIX timezone rule, displayed timezone label, and the optional remote-management flag. The page uses HTTP Digest authentication with username `admin` and the device's OTA password. These settings are stored in a versioned, checksummed flash-backed EEPROM record and survive power loss. For HTTPS, the Cloudflare Access client ID and secret may be compiled from the ignored secrets header or replaced through write-only settings fields. Existing credential values are never returned in the page or API; leaving a field blank keeps the current value. Saving settings restarts the logger so the new endpoint, credentials, and clock configuration are applied cleanly.
 
-Remote management is disabled by default. Production ESP32 owners opt in with
-`remote_management_enabled` in the USB provisioning bundle; the ESP8266
-development target retains its local toggle. An enabled logger displays a
-temporary pairing code and replaces it every ten minutes through its status
-heartbeat. Enter only the code in the app's shared device-pairing field; the app
-identifies the logger automatically. Management heartbeats include the effective
-live-upload flag, NTP servers, timezone rule, and timezone label so the app can
-initialise its form from the logger's current non-secret configuration. MQTT
-receives desired configuration from the device-scoped topic; HTTPS receives it
-in the authenticated status response. Desired documents use schema version 1,
-must match the authenticated device identity, carry a monotonically increasing
-configuration version, and contain the complete allow-listed configuration
-snapshot. Upstream host and credentials are deliberately excluded so a remote
-command cannot redirect or strand the logger.
-
-HTTPS ESP32 loggers also consume app-managed bearer rotation. A candidate is
-durably staged, acknowledged with the old bearer, and promoted only after the
-new bearer proves it can authenticate. The old bearer is retained across retry
-and power loss until proof succeeds. Status reports only rotation version, nonce,
-and state while acknowledgement is pending; candidate proof and subsequent
-heartbeats omit completed acknowledgements. Bearer values never appear in
-telemetry, diagnostics, or logs. See
-[ESP32 identity and provisioning](docs/provisioning.md) for recovery behavior.
-
-The same desired document carries a planned-session assignment independently of configuration version. The logger accepts only `unassigned`, `armed`, `claimed`, `finished`, `revoked`, or `expired`, reports the last accepted state in subsequent heartbeats, and never replaces its firmware-generated per-boot source session ID. Missing, stale, or invalid assignment state cannot interrupt sensor acquisition or local SD capture; first-source routing and the canonical recording ID remain server responsibilities.
+Remote management is disabled by default. Enabling it locally requires live upload and displays a temporary pairing code with a refresh countdown on the authenticated settings page. The logger replaces that proof every ten minutes and immediately reports the replacement through its status heartbeat. Enter only the code in the app's shared device-pairing field; the app identifies the logger automatically. Management heartbeats include the effective live-upload flag, NTP servers, timezone rule, and timezone label so the app can initialise its form from the logger's current non-secret configuration. MQTT receives desired configuration from the device-scoped topic; HTTPS receives it in the authenticated status response. Desired documents use schema version 1, must match the authenticated device identity, carry a monotonically increasing configuration version, and contain the complete allow-listed configuration snapshot. Upstream host and credentials are deliberately excluded so a remote command cannot redirect or strand the logger.
 
 The default clock configuration uses `pool.ntp.org`, `time.google.com`, POSIX timezone rule `AWST-8`, and display label `AWST`. The dashboard reports whether the RTC has been synchronised from NTP during the current boot, plus the last successful synchronization time. A valid RTC remains the offline holdover source between network synchronizations. POSIX offsets have reversed signs: for example, Perth is `AWST-8`, UTC is `UTC0`, and Sydney with daylight saving is `AEST-10AEDT,M10.1.0,M4.1.0/3`.
 
 Dashboard uptime is displayed as `DD:HH:mm:ss`. The live API retains numeric `uptime_ms` for compatibility and also exposes the formatted value as `uptime`.
 
-The ESP32 target uses the checked-in 16 MB partition table: two 2 MB OTA application slots plus an approximately 12 MB LittleFS partition. Store-and-forward is capped at 10 MB and split across two append-only segments; when capacity is exhausted, rotation drops the oldest remaining segment and reports the drop count. Snapshots are persisted before submission to a single-request HTTP worker, keeping network waits off the sampling task and preserving replay order. This increases flash writes even during healthy operation; physical endurance and flash latency qualification remain required. A mount failure is reported without automatically formatting the partition, preserving queued data for explicit recovery. Invalid tails are checksummed and quarantined before repair, and acknowledgement metadata is committed before an empty segment is reclaimed. The [store-and-forward recovery contract](docs/store-forward-recovery.md) defines scheduling, format compatibility, interruption outcomes, capacity/endurance estimates, and the destructive recovery procedure. The NodeMCU target keeps its existing 4 MB layout, synchronous HTTPS behavior, and no onboard queue.
+The ESP32 target uses the checked-in 16 MB partition table: two 2 MB OTA application slots plus an approximately 12 MB LittleFS partition. Store-and-forward is capped at 10 MB and split across two append-only segments; when capacity is exhausted, rotation drops the oldest remaining segment and reports the drop count. The asynchronous ESP32 path durably queues captures before upload, including when connected; flash endurance at the configured capture rate remains a production qualification requirement. The NodeMCU target keeps its existing 4 MB layout and does not enable this queue.
 
-Production brokers require authentication. USB provisioning requires the MQTT username to equal the immutable device ID; the broker ACL uses that identity to limit the device to publishing `<topicPrefix>/<deviceId>/live` and `<topicPrefix>/<deviceId>/status`. When remote management is enabled, it may additionally read only its own `<topicPrefix>/<deviceId>/config/desired` topic. Keep the matching password in the encrypted infrastructure vault.
+Production brokers require authentication. Set `APEXI_MQTT_USERNAME` to the same normalized value as `kLiveUpload.deviceId`; the broker ACL uses that identity to limit the device to publishing `<topicPrefix>/<deviceId>/live` and `<topicPrefix>/<deviceId>/status`. When remote management is enabled, it may additionally read only its own `<topicPrefix>/<deviceId>/config/desired` topic. Keep the matching password in the encrypted infrastructure vault and never commit `AppSecrets.h`.
 
 Current behavior:
 - Periodic status adds observed queue, clock, configuration, reconnection, and persistent ESP32 boot diagnostics under `system`. Missing fields mean unavailable, not zero; see the [status diagnostics contract](docs/status-diagnostics.md).
@@ -110,7 +148,7 @@ Current behavior:
 - Each message includes `schema_version`, a normalized `device_id`, a per-boot `session_id`, a monotonic `sequence`, the current timestamp, and the current sensor values.
 - The retained MQTT status topic now reflects both online and offline state so downstream consumers do not keep stale liveness.
 - The firmware exposes live upload state through the local web UI and `/api/live`.
-- The ESP32 local UI exposes onboard queue readiness, pending records/bytes, drops, corruption repairs, quarantined bytes, queue errors, oldest-record identity/age, and per-boot capture drops. Unknown age is not reported as zero.
+- The ESP32 local UI exposes onboard queue readiness, pending records/bytes, drops, and queue errors.
 - Local SD logging remains optional for long-duration/removable CSV archives.
 
 ### Starting and stopping a live session
@@ -136,7 +174,7 @@ flowchart LR
     A["4-20 mA Sensors"] --> B["ESP32 / ESP8266 Firmware"]
     B --> C["ADS1115 Sampling"]
     C --> D["App State"]
-    D --> E["TFT Dashboard (Optional)"]
+    D --> E["Waveshare Dash over BLE"]
     D --> F["Web UI / Local API"]
     D --> G["CSV Logger (Optional SD)"]
     D --> H["MQTT / HTTPS Live Upload"]
@@ -197,11 +235,17 @@ Example live payload shape:
 - On ESP32, hold the UI button continuously for five seconds during boot to clear owner credentials and runtime settings while preserving the immutable device identity.
 
 ## Web endpoints
-ESP32 networking is unavailable until an identity-bound owner record is installed over USB. A production-candidate build additionally requires the full secure SDK/runtime/storage posture described in the production-security runbook, including reviewed encrypted-queue qualification (currently blocked). ESP32 has no fallback AP. The ESP8266 development target can use the ignored `include/AppSecrets.h` and retains its bench-only fallback behavior.
+The checked-in default is station mode. Create the ignored `include/AppSecrets.h` from the example and provide a 2.4 GHz SSID/password; `fast_connect`-style BSSID/channel pinning is not used, so the ESP8266 performs a normal network scan. If station association times out, firmware falls back to the open 2.4 GHz SoftAP `MDA-LOGGER` at `http://192.168.44.1` on channel 6. Set `AppConfig::kWifi.apPassword` to an 8+ character WPA2 key if a closed fallback AP is required.
 - `/` compact phone-friendly sensor dashboard with a basic fault summary
-- `/diagnostics` detailed connectivity, hardware, storage, transport, and sensor diagnostics
-- `/api/live` current readings and system state as JSON
+- `/diagnostics` detailed connectivity, hardware, storage, transport, and sensor diagnostics, including Apexi Dash Bluetooth connection and link status. The upstream endpoint row displays only the server hostname; settings and `upload_server` retain the full endpoint. TinyC6 builds enable CSV logging to the stacked RTC Logger Shield microSD card (CS GPIO18).
+- `/api/live` current readings and system state as JSON, including TinyC6 battery voltage with configurable calibration gain, estimated 1S LiPo percentage, USB/5V presence and voltage trend. Battery diagnostics are estimates, not a fuel gauge or definitive charging/completion status; see [hardware setup](docs/hardware-setup.md).
 - `/api/files` available CSV files on the SD card
 - `/download/<file>` fetch a CSV log file
 
 The dashboard sizes sensor cards to their readings instead of stretching them across the page. Use the **Diagnostics** action beside **Settings**, or the fault-finding card, to open the full system view. The CSV card is visibly disabled and does not poll the file API when microSD logging is disabled in the firmware.
+
+## Production and provisioning boundaries
+
+The functional Logger/Dash development targets do not establish production qualification. Logger development builds support owner-approved app authorization and authenticated Settings; production candidates require identity-bound USB provisioning and the fail-closed secure-boot/encryption gate before networking. Legacy OTA remains disabled for production candidates. Existing USB-provisioned devices use their provisioned settings and bearer-rotation path; app-authorized devices use the persisted app credential path.
+
+See [device authorization](docs/device-authorization.md), [USB provisioning](docs/provisioning.md), [production security](docs/production-security.md), [signed releases](docs/releases.md), [queue recovery](docs/store-forward-recovery.md), and [physical qualification](docs/production-hardware-qualification.md). Remaining measured development limits and dated replay evidence are in [HTTPS replay](docs/https-replay.md).

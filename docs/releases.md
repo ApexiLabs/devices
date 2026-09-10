@@ -34,3 +34,11 @@ Rollback is a forward operational action using the prior known-good release; tag
 5. Record the rollback release, device ID, reason, verification result, and whether queue data was preserved.
 
 For a rehearsal, perform these steps on a non-race logger: install the new release, verify it, reinstall the immediately preceding known-good release, verify it, then reinstall the new release. A production release is not considered track-ready until that evidence exists for each supported physical target in use.
+
+## Current development artifacts
+
+Both CI and release publication build `logger-nodemcuv2`, `logger-esp32`, `logger-tinyc6`, and `dash-waveshare-s3-128`. Application artifacts are named `apexi-logger-nodemcuv2-firmware.bin`, `apexi-logger-esp32-firmware.bin`, `apexi-logger-tinyc6-firmware.bin`, and `apexi-dash-waveshare-s3-128-firmware.bin`, with matching ELF files. ESP32 targets also publish `apexi-<target>-factory.bin` using the platform-generated factory image and its target-specific offsets. Metadata records all four targets and their flash/partition layout.
+
+`logger-esp32-production-candidate` separately proves the fail-closed firmware gate compiles; it is not a production approval or a published replacement for a development image. The pioarduino SDK audit reads `framework-arduinoespressif32-libs/esp32/sdkconfig` under the PlatformIO packages directory. CI installs the esptool 5 CLI dependencies explicitly; cryptographic release tests use the pinned `requirements-production-verification.txt` packages in a separate `.verification-venv` to avoid conflicting esptool versions.
+
+The classic ESP32 and its production-candidate compile use link-time size optimization and disable unused C++ exception/unwind metadata. Arduino library error logging and application system events remain available. The HTTPS exchange buffer starts zero-initialized so it occupies BSS rather than storing an otherwise empty buffer in flash. `scripts/esp32-lto.py` aligns linker and archive tooling with these flags. The existing 2 MiB OTA slots and queue offsets are unchanged; builds fail if the application exceeds its slot.

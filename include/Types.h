@@ -24,7 +24,20 @@ struct SensorSnapshot {
   bool hasValidSample;
 };
 
+struct UploadPerformance {
+  uint32_t captured=0,accepted=0,captureRejected=0,requests=0,reused=0,lastRequestMs=0,lastSampleEpoch=0;
+  uint32_t batchRequests=0,batchAccepted=0;
+  bool batchEnabled=false;
+};
 struct SystemStatus {
+  UploadPerformance uploadPerformance;
+  bool batterySupported;
+  bool batteryValid;
+  float batteryVoltage;
+  int batteryPercent;
+  bool externalPower;
+  String batteryTrend;
+  String batteryState;
   String deviceId;
   String deviceName;
   String hardwareRevision;
@@ -49,6 +62,9 @@ struct SystemStatus {
   bool wifiReady;
   bool uploadEnabled;
   bool uploadConnected;
+  bool dashEnabled;
+  bool dashConnected;
+  String dashStatus;
   bool otaEnabled;
   bool otaReady;
   String otaBootHealth;
@@ -61,6 +77,9 @@ struct SystemStatus {
   String uploadSessionId;
   String lastUploadError;
   uint32_t lastUploadSequence;
+  int lastUploadHttpStatus;
+  uint8_t uploadEvidenceState;
+  uint32_t uploadSuccessAgeMs;
   bool remoteManagementEnabled;
   uint32_t appliedConfigVersion;
   String remoteManagementStatus;

@@ -9,7 +9,7 @@ class DeviceProvisioning {
   bool begin(const AppConfig::WifiConfig &wifiDefaults,
              const AppConfig::OtaConfig &otaDefaults,
              const AppConfig::UploadConfig &uploadDefaults);
-  bool acceptSerialCommand(const String &line);
+  bool acceptSerialCommand(const String &line, bool (*prepareOwnerChange)());
   bool factoryResetOwnerCredentials();
 
   const AppConfig::WifiConfig &wifiConfig() const;

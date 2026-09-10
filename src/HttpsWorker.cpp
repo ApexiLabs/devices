@@ -27,6 +27,8 @@ class ResponseSink : public Stream {
 };
 }
 
+HttpsWorker &HttpsWorker::shared(){static HttpsWorker worker;return worker;}
+
 bool HttpsWorker::begin(const char *rootCertificate) {
   if (task_ != nullptr) return true;
   rootCertificate_ = rootCertificate;
@@ -35,9 +37,12 @@ bool HttpsWorker::begin(const char *rootCertificate) {
   return xTaskCreatePinnedToCore(run, "apexi-https", 12288, this, 1, &task_, 0) == pdPASS;
 }
 
-bool HttpsWorker::submit(const char *url, const char *payload, const char *bearer,
-                         const char *accessId, const char *accessSecret) {
-  if (task_ == nullptr || !exchange_.submit(url, payload, bearer, accessId, accessSecret)) return false;
+bool HttpsWorker::submit(Owner owner, const char *url, const char *payload, const char *bearer,
+                         const char *accessId, const char *accessSecret, bool get) {
+  if(owner==Owner::None || task_==nullptr || !arbiter_.request(owner,exchange_.idle()))return false;
+  if(!exchange_.submit(url,payload,bearer,accessId,accessSecret,get)){arbiter_.cancel(owner);return false;}
+  arbiter_.cancel(owner);
+  owner_=owner;
   xTaskNotifyGive(task_);
   return true;
 }
@@ -47,25 +52,39 @@ void HttpsWorker::run(void *context) {
   WiFiClientSecure client;
   client.setCACert(self.rootCertificate_);
   client.setTimeout(4000);
-  client.setHandshakeTimeout(4);
+  client.setHandshakeTimeout(15);
+  HTTPClient http;
+  String previousOrigin;
+  uint32_t completedAt=millis();
   for (;;) {
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if(!ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(1000))){
+      if(uint32_t(millis()-completedAt)>15000)client.stop();
+      continue;
+    }
     const auto *request = self.exchange_.request();
     if (request == nullptr) continue;
     auto &result = self.exchange_.workerResult();
     result.status = -1;
+    result.tlsError=0;
     result.body[0] = '\0';
-    HTTPClient http;
+    const uint32_t started=millis();
+    const String url=request->url;
+    const int path=url.indexOf('/',8);
+    const String origin=path<0?url:url.substring(0,path);
+    if(previousOrigin!=origin)client.stop();
+    previousOrigin=origin;
+    result.reused=client.connected();
     http.setConnectTimeout(4000);
     http.setTimeout(4000);
-    http.setReuse(false);
+    http.setReuse(true);
+    http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     http.setUserAgent("ApexiLabs-Logger/1.0");
     if (http.begin(client, request->url)) {
       http.addHeader("Content-Type", "application/json");
-      http.addHeader("Authorization", "Bearer " + String(request->bearer));
+      if(request->bearer[0])http.addHeader("Authorization", "Bearer " + String(request->bearer));
       http.addHeader("CF-Access-Client-Id", request->accessId);
       http.addHeader("CF-Access-Client-Secret", request->accessSecret);
-      result.status = http.POST(String(request->payload));
+      result.status = request->get?http.GET():http.POST(String(request->payload));
       if (result.status > 0) {
         ResponseSink sink(result.body);
         if (http.writeToStream(&sink) < 0) {
@@ -74,8 +93,9 @@ void HttpsWorker::run(void *context) {
         }
       }
     }
+    if(result.status<=0){char detail[128]{};result.tlsError=client.lastError(detail,sizeof(detail));client.stop();}
     http.end();
-    client.stop();
+    result.durationMs=millis()-started;completedAt=millis();
     self.exchange_.complete();
   }
 }

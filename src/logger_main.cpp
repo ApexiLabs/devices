@@ -4,8 +4,14 @@
 #include <SPI.h>
 #include <time.h>
 #include <Wire.h>
+#if defined(ESP8266)
+#include <ESP8266WiFi.h>
+#else
+#include <WiFi.h>
+#endif
 
 #if defined(ESP32)
+#include "OwnerResetNvs.h"
 #include <esp_flash_encrypt.h>
 #include <esp_secure_boot.h>
 #endif
@@ -14,15 +20,20 @@
 #include "AppBearerRotation.h"
 #include "CsvLogger.h"
 #include "Dashboard.h"
-#include "DeviceProvisioning.h"
+#include "DashLink.h"
+#include "BatteryMonitor.h"
 #include "LiveUpload.h"
 #include "Logic.h"
+#include "DeviceProvisioning.h"
 #include "ProvisioningPolicy.h"
 #include "RuntimeSettings.h"
 #include "SensorChannel.h"
 #include "Timekeeper.h"
 #include "WebUi.h"
+#include "SystemLog.h"
+#include "RemoteLogs.h"
 #include "SignedOtaEsp32.h"
+#include "OwnerReset.h"
 
 namespace {
 
@@ -38,14 +49,33 @@ std::array<SensorChannel, AppConfig::kSensorCount> sensorChannels = [] {
 Timekeeper timekeeper;
 CsvLogger csvLogger;
 Dashboard dashboard;
+DashLink dashLink;
+BatteryMonitor batteryMonitor;
 WebUi webUi;
 LiveUpload liveUpload;
+LoggerAuthorization loggerAuthorization;
 RuntimeSettings runtimeSettings;
+RemoteLogs remoteLogs;
 DeviceProvisioning deviceProvisioning;
 AppBearerRotation appBearerRotation;
 #if defined(ESP32)
 SignedOtaEsp32 signedOtaBackend;
 OtaBootHealth otaBootHealth(signedOtaBackend);
+#endif
+
+bool ownerResetReady = true;
+#if defined(ESP32)
+OwnerReset::NvsStore ownerResetStore;
+OwnerReset::Coordinator ownerReset;
+void clearOwnerState(bool requested) {
+  auto owner = [] { return deviceProvisioning.factoryResetOwnerCredentials(); };
+  auto runtime = [] { return runtimeSettings.factoryReset(); };
+  auto rotation = [] { return appBearerRotation.factoryReset(); };
+  auto authorization = [] { return loggerAuthorization.factoryReset(); };
+  if (requested) ownerReset.request(ownerResetStore, owner, runtime, rotation, authorization);
+  else ownerReset.resume(ownerResetStore, owner, runtime, rotation, authorization);
+  ownerResetReady = ownerReset.networkAllowed();
+}
 #endif
 
 bool adcReady = false;
@@ -121,6 +151,13 @@ void handleButton() {
 
 AppState buildState() {
   AppState state{};
+  state.system.batterySupported = batteryMonitor.supported();
+  state.system.batteryValid = batteryMonitor.valid();
+  state.system.batteryVoltage = batteryMonitor.voltage();
+  state.system.batteryPercent = batteryMonitor.percent();
+  state.system.externalPower = batteryMonitor.externalPower();
+  state.system.batteryTrend = batteryMonitor.trend();
+  state.system.batteryState = batteryMonitor.state();
   for (size_t index = 0; index < sensorChannels.size(); ++index) {
     state.sensors[index] = sensorChannels[index].snapshot();
   }
@@ -131,7 +168,9 @@ AppState buildState() {
   state.transportTimestamp = timekeeper.transportTimestamp(state.uptimeMs);
   liveUpload.setClockFault((AppConfig::kFeatures.rtcEnabled && !rtcReady) ||
                           !state.transportTimestamp.endsWith("Z"));
-  state.system.deviceId = deviceProvisioning.deviceId();
+  const char *authorizedId = loggerAuthorization.uploadConfig().deviceId;
+  state.system.deviceId = !deviceProvisioning.isProvisioned() && authorizedId
+      ? authorizedId : deviceProvisioning.deviceId();
   state.system.deviceName = deviceProvisioning.friendlyName();
   state.system.hardwareRevision = deviceProvisioning.hardwareRevision();
   state.system.provisioningStatus = deviceProvisioning.status();
@@ -159,6 +198,9 @@ AppState buildState() {
   state.system.wifiReady = wifiReady;
   state.system.uploadEnabled = liveUpload.isEnabled();
   state.system.uploadConnected = liveUpload.isConnected();
+  state.system.dashEnabled = dashLink.isEnabled();
+  state.system.dashConnected = dashLink.isConnected();
+  state.system.dashStatus = dashLink.status();
   state.system.otaEnabled = OtaPolicy::legacyAllowed(APEXI_PRODUCTION_SECURITY_REQUIRED != 0,
                                                     AppConfig::kFeatures.otaUpdatesEnabled);
   state.system.otaReady = otaReady;
@@ -171,6 +213,11 @@ AppState buildState() {
   state.system.uploadSessionId = liveUpload.sessionId();
   state.system.lastUploadError = liveUpload.lastError();
   state.system.lastUploadSequence = liveUpload.lastSequence();
+  state.system.lastUploadHttpStatus=liveUpload.lastHttpStatus();
+  state.system.uploadPerformance=liveUpload.performance();
+  const auto uploadEvidence=liveUpload.uploadEvidence(millis());
+  state.system.uploadEvidenceState=uploadEvidence.state;
+  state.system.uploadSuccessAgeMs=uploadEvidence.ageMs;
   state.system.remoteManagementEnabled = runtimeSettings.remoteManagementEnabled();
   state.system.appliedConfigVersion = runtimeSettings.appliedConfigVersion();
   state.system.remoteManagementStatus = liveUpload.managementStatus();
@@ -203,7 +250,8 @@ void sampleSensors() {
 }
 
 void beginOta() {
-  const AppConfig::OtaConfig &ota = deviceProvisioning.otaConfig();
+  const AppConfig::OtaConfig &ota = deviceProvisioning.isProvisioned()
+      ? deviceProvisioning.otaConfig() : AppConfig::kOta;
   if (!OtaPolicy::legacyAllowed(APEXI_PRODUCTION_SECURITY_REQUIRED != 0,
                                 AppConfig::kFeatures.otaUpdatesEnabled) || !wifiReady ||
       webUi.modeString() != "STA" || strlen(ota.password) == 0) {
@@ -213,9 +261,10 @@ void beginOta() {
 
   ArduinoOTA.setHostname(ota.hostname);
   ArduinoOTA.setPassword(ota.password);
-  ArduinoOTA.onStart([]() { Serial.println("OTA update started"); });
-  ArduinoOTA.onEnd([]() { Serial.println("OTA update complete"); });
+  ArduinoOTA.onStart([]() { systemLog.add("ota_started"); Serial.println("OTA update started"); });
+  ArduinoOTA.onEnd([]() { systemLog.add("ota_complete"); Serial.println("OTA update complete"); });
   ArduinoOTA.onError([](ota_error_t error) {
+    systemLog.add("ota_failed",error,3);
     Serial.print("OTA error=");
     Serial.println(static_cast<unsigned int>(error));
   });
@@ -295,7 +344,7 @@ void setup() {
   while (!Serial && (millis() - serialWaitStartMs) < 5000) {
     delay(10);
   }
-  Serial.println("MDA logger boot");
+  Serial.println("Apexi Logger boot");
   Serial.flush();
 
   // A steady light confirms that the MCU has reached firmware setup.
@@ -308,6 +357,9 @@ void setup() {
 
   pinMode(AppConfig::kPins.buttonPin, INPUT_PULLUP);
 
+#if defined(ESP32)
+  clearOwnerState(false);
+#endif
   deviceProvisioning.begin(AppConfig::kWifi, AppConfig::kOta, AppConfig::kLiveUpload);
 #if defined(ESP32)
   secureBootEnabled = esp_secure_boot_enabled();
@@ -328,15 +380,15 @@ void setup() {
       delay(20);
     }
     if ((millis() - resetStartedMs) >= 5000) {
-      const bool ownerCleared = deviceProvisioning.factoryResetOwnerCredentials();
-      const bool runtimeCleared = runtimeSettings.factoryReset();
-      const bool bearerCleared = appBearerRotation.factoryReset();
-      Serial.println(ownerCleared && runtimeCleared && bearerCleared
-                         ? "FACTORY_RESET=owner-credentials-cleared"
-                         : "FACTORY_RESET=failed-closed");
-      Serial.flush();
-      delay(250);
-      ESP.restart();
+      clearOwnerState(true);
+      Serial.println(ownerResetReady ? "FACTORY_RESET=owner-credentials-cleared"
+                                    : "FACTORY_RESET=pending-network-disabled");
+      if (ownerResetReady) {
+        Serial.flush();
+        delay(250);
+        ESP.restart();
+      }
+
     }
   }
 
@@ -345,22 +397,17 @@ void setup() {
   while ((millis() - provisioningWindowStartedMs) < 2500) {
     if (Serial.available() > 0) {
       const String command = Serial.readStringUntil('\n');
-      const bool provisioningAccepted = deviceProvisioning.acceptSerialCommand(command);
-      if (provisioningAccepted && runtimeSettings.factoryReset() &&
-          appBearerRotation.factoryReset()) {
+      const bool provisioningAccepted = ownerResetReady && deviceProvisioning.acceptSerialCommand(
+          command, [] { clearOwnerState(true); return ownerResetReady; });
+      if (provisioningAccepted) {
         Serial.println("PROVISIONING_RESULT=accepted");
         Serial.flush();
         delay(250);
         ESP.restart();
       }
-      if (provisioningAccepted) {
-        deviceProvisioning.factoryResetOwnerCredentials();
-      }
       Serial.print("PROVISIONING_RESULT=rejected error=");
-      Serial.println(provisioningAccepted
-                         ? "runtime settings reset failed; owner record removed"
-                         : deviceProvisioning.lastError());
-      if (command.startsWith("APEXI_PROVISION ")) {
+      Serial.println(deviceProvisioning.lastError());
+      if (ownerResetReady && command.startsWith("APEXI_PROVISION ")) {
         Serial.flush();
         delay(250);
         ESP.restart();
@@ -388,11 +435,11 @@ void setup() {
   }
 
 #if defined(ESP32)
-  constexpr bool kProductionEsp32Target = true;
+  constexpr bool kProductionEsp32Target = APEXI_PRODUCTION_SECURITY_REQUIRED != 0;
 #else
   constexpr bool kProductionEsp32Target = false;
 #endif
-  const bool networkAllowed = ProvisioningPolicy::networkAllowed(
+  const bool networkAllowed = ownerResetReady && ProvisioningPolicy::networkAllowed(
       kProductionEsp32Target, deviceProvisioning.isProvisioned()) &&
       Logic::productionSecurityAllowsNetwork(APEXI_PRODUCTION_SECURITY_REQUIRED != 0,
                                              secureBootEnabled,
@@ -402,19 +449,29 @@ void setup() {
 #endif
       ;
   if (networkAllowed) {
-    appBearerRotation.begin(deviceProvisioning.uploadConfig().appDeviceToken);
-    runtimeSettings.begin(deviceProvisioning.uploadConfig(),
+    const bool usbProvisioned = deviceProvisioning.isProvisioned();
+    auto uploadDefaults = usbProvisioned ? deviceProvisioning.uploadConfig() : AppConfig::kLiveUpload;
+    if (!usbProvisioned) uploadDefaults.deviceId = deviceProvisioning.deviceId();
+    const auto &wifiConfig = usbProvisioned ? deviceProvisioning.wifiConfig() : AppConfig::kWifi;
+    const auto &otaConfig = usbProvisioned ? deviceProvisioning.otaConfig() : AppConfig::kOta;
+    appBearerRotation.begin(uploadDefaults.appDeviceToken);
+    runtimeSettings.begin(uploadDefaults,
                           AppConfig::kFeatures.liveUploadEnabled,
-                          deviceProvisioning.remoteManagementEnabled());
-    wifiReady = webUi.begin(deviceProvisioning.wifiConfig(), csvLogger, runtimeSettings,
+                          usbProvisioned && deviceProvisioning.remoteManagementEnabled());
+    wifiReady = webUi.begin(wifiConfig, csvLogger, runtimeSettings,
                             deviceProvisioning.deviceId(),
-                            deviceProvisioning.otaConfig().password,
+                            otaConfig.password,
                             AppConfig::kFeatures.localSettingsEnabled);
-    liveUpload.begin(runtimeSettings.uploadConfig(),
+    if (!usbProvisioned) {
+      loggerAuthorization.begin(runtimeSettings.uploadConfig());
+      webUi.setAuthorization(loggerAuthorization);
+      liveUpload.setAuthorization(loggerAuthorization);
+    }
+    liveUpload.begin(usbProvisioned ? runtimeSettings.uploadConfig() : loggerAuthorization.uploadConfig(),
                      runtimeSettings.liveUploadEnabled(),
                      runtimeSettings.remoteManagementEnabled(),
                      runtimeSettings.appliedConfigVersion(),
-                     &appBearerRotation);
+                     usbProvisioned ? &appBearerRotation : nullptr);
     liveUpload.setReportedConfig(runtimeSettings.liveUploadEnabled(),
                                  runtimeSettings.ntpPrimary(),
                                  runtimeSettings.ntpSecondary(),
@@ -453,6 +510,9 @@ void setup() {
   spiBus.begin();
 
   dashboard.begin();
+  auto dashConfig = AppConfig::kDashLink;
+  dashConfig.enabled = dashConfig.enabled && networkAllowed;
+  dashLink.begin(dashConfig);
 
   adcReady = ads.begin(AppConfig::kAds1115Address, &Wire);
   if (adcReady) {
@@ -473,6 +533,12 @@ void setup() {
   Serial.println(adcReady ? "1" : "0");
 
   sampleSensors();
+  batteryMonitor.begin();
+  const auto &activeUpload = deviceProvisioning.isProvisioned()
+      ? runtimeSettings.uploadConfig() : loggerAuthorization.uploadConfig();
+  systemLog.begin(timekeeper, activeUpload.deviceId ? activeUpload.deviceId : deviceProvisioning.deviceId());
+  remoteLogs.setBearerRotation(deviceProvisioning.isProvisioned() ? &appBearerRotation : nullptr);
+  if (networkAllowed) remoteLogs.begin(activeUpload);
   const AppState initialState = buildState();
   dashboard.render(initialState);
   webUi.publishState(initialState);
@@ -480,6 +546,44 @@ void setup() {
 }
 
 void loop() {
+  loggerAuthorization.loop();
+  if(loggerAuthorization.restartRequired()) {
+    static uint32_t authorizedMs=millis();
+    if(uint32_t(millis()-authorizedMs)>1500)ESP.restart();
+  }
+  remoteLogs.loop(runtimeSettings.remoteManagementEnabled() && runtimeSettings.liveUploadEnabled());
+  systemLog.loop(timekeeper,csvLogger.isReady());
+  static uint32_t lastHealthMs=0;
+  static uint8_t health=255;
+  if(uint32_t(millis()-lastHealthMs)>=1000) {
+    lastHealthMs=millis();
+    const uint8_t next=(WiFi.status()==WL_CONNECTED?1:0) | (dashLink.isConnected()?2:0) |
+        (liveUpload.isConnected()?4:0) | (adcReady?8:0) | (rtcReady?16:0) |
+        (csvLogger.isReady() && csvLogger.lastError().isEmpty()?32:0);
+    const char *up[]={"wifi_connected","dash_connected","upstream_connected","adc_ready","rtc_ready","sd_ready"};
+    const char *down[]={"wifi_disconnected","dash_disconnected","upstream_disconnected","adc_fault","rtc_fault","sd_fault"};
+    for(unsigned bit=0;bit<6;++bit) if(health==255 || ((next^health)&(1<<bit)))
+      systemLog.add(next&(1<<bit)?up[bit]:down[bit],0,next&(1<<bit)?1:2);
+    health=next;
+    static int previousHttpStatus=0;
+    const int httpStatus=liveUpload.lastHttpStatus();
+    if(httpStatus!=previousHttpStatus) {
+      systemLog.add("upstream_http_status",uint32_t(httpStatus),httpStatus<0 || httpStatus>=400?2:1);
+      previousHttpStatus=httpStatus;
+    }
+    static bool previousTimeSync=false;
+    if(previousTimeSync!=rtcNetworkSynced) {
+      systemLog.add(rtcNetworkSynced?"time_synced":"time_sync_lost",0,rtcNetworkSynced?1:2);
+      previousTimeSync=rtcNetworkSynced;
+    }
+    static std::array<SensorFault,AppConfig::kSensorCount> faults{};
+    for(size_t i=0;i<sensorChannels.size();++i) {
+      const auto fault=sensorChannels[i].snapshot().activeFault;
+      if(faults[i]!=fault) { systemLog.add("sensor_state",(uint32_t(i)<<16)|uint32_t(fault),fault==SensorFault::None?1:2); faults[i]=fault; }
+    }
+  }
+  batteryMonitor.loop(millis());
+  dashLink.loop(millis());
   handleButton();
   webUi.handleClient();
   liveUpload.loop();
@@ -525,6 +629,12 @@ void loop() {
     lastSampleMs = nowMs;
   }
 
+  std::array<SensorSnapshot, AppConfig::kSensorCount> dashSamples{};
+  for (size_t i = 0; i < sensorChannels.size(); ++i) dashSamples[i] = sensorChannels[i].snapshot();
+  dashLink.publish(dashSamples, nowMs);
+  const uint32_t uploadStatusMs=millis();
+  dashLink.publishUploadStatus(liveUpload.uploadEvidence(uploadStatusMs),uploadStatusMs);
+
   if ((nowMs - lastLogMs) >= AppConfig::kTiming.loggingIntervalMs) {
     AppState state = buildState();
     if (AppConfig::kFeatures.sdLoggingEnabled && csvLogger.isReady()) {
@@ -565,6 +675,8 @@ void loop() {
     Serial.print(state.system.wifiReady ? 1 : 0);
     Serial.print(" ip=");
     Serial.print(state.system.ipAddress);
+    Serial.print(" dash=");
+    Serial.print(dashLink.status());
     for (const SensorSnapshot &sensor : state.sensors) {
       Serial.print(" | ");
       Serial.print(sensor.id);

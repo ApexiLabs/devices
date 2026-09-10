@@ -13,16 +13,19 @@
 
 #include "AppConfig.h"
 #include "AppBearerRotation.h"
+#include "StatusDiagnostics.h"
 #include "RemoteConfig.h"
 #include "StoreForwardQueue.h"
-#include "StatusDiagnostics.h"
 #include "Types.h"
+#include "UploadEvidence.h"
 #include "HttpsWorker.h"
 #include "HttpsPacing.h"
+class LoggerAuthorization;
 
 class LiveUpload {
  public:
   LiveUpload();
+  static const char *trustRoot();
 
   bool begin(const AppConfig::UploadConfig &config,
              bool enabled,
@@ -33,24 +36,32 @@ class LiveUpload {
   bool publishIfDue(const AppState &state);
 
   bool isEnabled() const;
+  void setAuthorization(LoggerAuthorization &authorization){authorization_=&authorization;}
+  UploadEvidence::Status uploadEvidence(uint32_t nowMs);
   bool isConnected();
   bool hasAuthenticatedHeartbeat() const;
+  void setClockFault(bool fault) { diagnostics_.observeClockFault(fault); }
+  void recordCompletedBoot() { diagnostics_.recordCompletedBoot(); }
+  void setDeviceMetadata(const char *friendlyName,const char *hardwareRevision,const char *provisionedAt);
+  void rejectRemoteConfig();
+  uint32_t storeForwardCorruptionEvents() const;
+  size_t storeForwardQuarantinedBytes() const;
+  String queueOldestDiagnostics() const;
+  uint32_t uploadCaptureDrops() const { return performance_.captureRejected; }
   String protocolName() const;
   String serverName() const;
   String sessionId() const;
   String lastError() const;
   uint32_t lastSequence() const;
+  int lastHttpStatus() const { return lastHttpStatus_; }
+  UploadPerformance performance() const {return performance_;}
   bool storeForwardEnabled() const;
   bool storeForwardReady() const;
   uint32_t storeForwardPendingRecords() const;
   size_t storeForwardPendingBytes() const;
   size_t storeForwardCapacityBytes() const;
   uint32_t storeForwardDroppedRecords() const;
-  uint32_t storeForwardCorruptionEvents() const;
-  size_t storeForwardQuarantinedBytes() const;
   String storeForwardError() const;
-  String queueOldestDiagnostics() const;
-  uint32_t uploadCaptureDrops() const;
   String pairingCode() const;
   uint32_t pairingCodeExpiresInSeconds() const;
   String managementStatus() const;
@@ -60,37 +71,27 @@ class LiveUpload {
                          const char *ntpSecondary,
                          const char *timeZoneRule,
                          const char *timeZoneLabel);
-  void setDeviceMetadata(const char *friendlyName,
-                         const char *hardwareRevision,
-                         const char *provisionedAt);
   bool consumeRemoteConfig(RemoteConfig &config);
   void acknowledgeRemoteConfig(uint32_t version);
-  void rejectRemoteConfig();
-  void setClockFault(bool fault) { diagnostics_.observeClockFault(fault); }
-  void recordCompletedBoot() { diagnostics_.recordCompletedBoot(); }
 
  private:
 #if defined(ESP32)
-  enum class HttpsOperation { None, Status, RotationAck, RotationProof, RotationFallback, Snapshot };
-  void serviceHttps(uint32_t nowMs);
-  bool captureHttps(const AppState &state);
-  bool submitHttps(HttpsOperation operation, const String &payload, const char *bearer);
-  void completeHttps(uint32_t nowMs);
+  enum class Operation { None, Status, Fallback, RotationAck, RotationProof, Snapshot, Batch };
   void refreshQueueOldest();
-  HttpsWorker httpsWorker_;
-  HttpsPacing httpsPacing_;
-  HttpsOperation httpsOperation_ = HttpsOperation::None;
-  bool httpsStatusRequested_ = true;
-  bool httpsFallbackRequested_ = false;
-  bool httpsBackoff_ = false;
-  bool httpsSnapshotDurable_ = false;
-  String httpsSnapshotPayload_;
-  String volatileSnapshot_;
-  String queueOldestSession_;
-  String queueOldestTimestamp_;
-  uint32_t queueOldestSequence_ = 0;
-  uint32_t queueOldestEpoch_ = 0;
-  uint32_t captureDrops_ = 0;
+  String queueOldestSession_,queueOldestTimestamp_;
+  uint32_t queueOldestSequence_=0,queueOldestEpoch_=0;
+  void serviceHttps(uint32_t now);
+  bool captureHttps(const AppState &state);
+  bool submitHttps(Operation operation,const String &payload);
+  Operation operation_=Operation::None;
+  HttpsPacing pacing_;
+  bool workerReady_=false,statusRequested_=true,fallbackRequested_=false,backoff_=false,durableInFlight_=false;
+  uint32_t completedMs_=0;
+  String inFlightPayload_,volatilePayload_;
+  std::vector<String> batchRecords_;
+  String batchId_,batchPayload_;
+  bool batchEnabled_=false,batchAcknowledged_=false;
+  size_t batchAckIndex_=0;
 #endif
   bool reconnect(uint32_t nowMs);
   void publishOfflineStatusAndDisconnect();
@@ -98,16 +99,14 @@ class LiveUpload {
   bool publishSnapshot(const AppState &state);
   bool queueSnapshot(const AppState &state);
   bool replayQueuedSnapshot();
-  bool postHttps(const char *kind,
-                 const String &payload,
-                 String *responseBody = nullptr,
-                 const char *bearer = nullptr);
+  bool postHttps(const char *kind, const String &payload, String *responseBody = nullptr,const char *bearer = nullptr);
+  bool publishLegacyRotationStatus(bool connected);
+  bool consumeDesiredState(const uint8_t *payload,unsigned int length);
+  bool parseCredentialRotation(JsonObjectConst rotation);
+  bool parseAssignment(JsonObjectConst assignment);
   void consumeHttpsDesiredConfig(const String &responseBody);
   void handleMqttMessage(char *topic, uint8_t *payload, unsigned int length);
   bool parseRemoteConfig(const uint8_t *payload, unsigned int length, RemoteConfig &config);
-  bool consumeDesiredState(const uint8_t *payload, unsigned int length);
-  bool parseCredentialRotation(JsonObjectConst rotation);
-  bool parseAssignment(JsonObjectConst assignment);
   void rotatePairingCode(uint32_t nowMs);
   String liveTopic() const;
   String statusTopic() const;
@@ -125,46 +124,41 @@ class LiveUpload {
   WiFiClientSecure httpsClient_;
 #endif
   AppConfig::UploadConfig config_{};
+  AppBearerRotation *bearerRotation_=nullptr;
+  StatusDiagnostics diagnostics_;
+  bool httpsRecoveryPending_=false,authenticatedHeartbeatObserved_=false;
+  uint32_t lastAuthenticatedHeartbeatMs_=0;
+  String friendlyName_,hardwareRevision_,provisionedAt_;
+  String assignmentTargetSessionId_,assignmentPlannedSessionName_,assignmentStatus_="unassigned",assignmentRole_,assignmentExpiresAt_,assignmentSourceSessionId_,assignmentRecordingSessionId_;
   bool enabled_ = false;
+  UploadEvidence::Tracker uploadEvidence_;
+  UploadPerformance performance_;
+  LoggerAuthorization *authorization_=nullptr;
   bool remoteManagementEnabled_ = false;
   uint32_t lastPublishMs_ = 0;
   uint32_t lastReconnectAttemptMs_ = 0;
   uint32_t lastHttpsAttemptMs_ = 0;
   uint32_t lastSequence_ = 0;
   uint32_t lastStatusPublishMs_ = 0;
-  uint32_t lastAuthenticatedHeartbeatMs_ = 0;
-  bool authenticatedHeartbeatObserved_ = false;
   uint32_t appliedConfigVersion_ = 0;
   String deviceId_;
   String sessionId_;
   String clientId_;
   String lastError_;
+  String lastHttpError_;
   String pairingCode_;
   uint32_t pairingCodeGeneratedMs_ = 0;
   String managementStatus_ = "ready";
   String managementError_;
-  String friendlyName_;
-  String hardwareRevision_;
-  String provisionedAt_;
   bool reportedUploadEnabled_ = false;
   String reportedNtpPrimary_;
   String reportedNtpSecondary_;
   String reportedTimeZoneRule_;
   String reportedTimeZoneLabel_;
-  String assignmentTargetSessionId_;
-  String assignmentPlannedSessionName_;
-  String assignmentStatus_ = "unassigned";
-  String assignmentRole_;
-  String assignmentExpiresAt_;
-  String assignmentSourceSessionId_;
-  String assignmentRecordingSessionId_;
   RemoteConfig pendingRemoteConfig_{};
   bool hasPendingRemoteConfig_ = false;
   bool httpsConnected_ = false;
   int lastHttpStatus_ = 0;
   bool lastPostRetryable_ = false;
   StoreForwardQueue storeForwardQueue_;
-  AppBearerRotation *bearerRotation_ = nullptr;
-  StatusDiagnostics diagnostics_;
-  bool httpsRecoveryPending_ = false;
 };

@@ -7,7 +7,42 @@
 #include <string>
 #include <iostream>
 
+static void testColdResultLifecycle() {
+  HttpsExchange exchange;
+  assert(exchange.workerResult().status == 0);
+  assert(exchange.result() == nullptr);
+  assert(exchange.submit("https://example", "{}", "bearer", "id", "secret"));
+  // A cold zero is never an externally visible HTTP result.
+  assert(exchange.result() == nullptr);
+  exchange.workerResult().status = -1;  // Worker prepares a failed attempt.
+  assert(exchange.result() == nullptr);
+  exchange.complete();
+  assert(exchange.result()->status == -1);
+  exchange.release();
+  assert(exchange.result() == nullptr);
+
+  assert(exchange.submit("https://example", "{}", "bearer", "id", "secret"));
+  exchange.workerResult().status = 200;
+  assert(exchange.result() == nullptr);
+  exchange.complete();
+  assert(exchange.result()->status == 200);
+  exchange.release();
+
+  assert(exchange.submit("https://example", "{}", "bearer", "id", "secret"));
+  // Explicit per-request reset replaces the previous success when HTTP setup
+  // fails; neither stale success nor intermediate failure is published early.
+  assert(exchange.workerResult().status == 200);
+  assert(exchange.result() == nullptr);
+  exchange.workerResult().status = -1;
+  assert(exchange.result() == nullptr);
+  exchange.complete();
+  assert(exchange.result()->status == -1);
+  exchange.release();
+  assert(exchange.result() == nullptr && exchange.idle());
+}
+
 int main() {
+  testColdResultLifecycle();
   HttpsArbiter arbiter;using Owner=HttpsArbiter::Owner;
   assert(!arbiter.request(Owner::Authorization,false));
   assert(!arbiter.request(Owner::Logs,false));

@@ -20,7 +20,10 @@ class HttpsExchange {
     char accessSecret[513]{};
   };
   struct Result {
-    int status = -1;
+    // Keep cold storage zero-initialized so the shared worker buffers occupy
+    // BSS, not a flash-backed data image. No result is visible until complete();
+    // HttpsWorker resets status to -1 before attempting each HTTP transaction.
+    int status = 0;
     int tlsError = 0;
     uint32_t durationMs = 0;
     bool reused = false;

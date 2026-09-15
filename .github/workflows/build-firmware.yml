@@ -89,7 +89,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: apexi-logger-firmware
-          path: dist/apexi-logger-*
+          path: |
+            dist/apexi-logger-*
+            dist/esp32-security-classification.json
           if-no-files-found: error
 
       - name: Upload Dash artifacts

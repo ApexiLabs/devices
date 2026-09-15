@@ -1,5 +1,7 @@
 # Apexi Logger and Apexi Dash
 
+Product source ownership, migration provenance and hardware/firmware version separation are documented in [repository layout](docs/repository-layout.md).
+
 Logger Dashboard, Diagnostics, Settings and System logs share the app's ApexiLabs mark and wordmark. The embedded logo works offline; Inter uses the app's Google Fonts stylesheet with a system-font fallback.
 
 The dashboard CSV list displays file sizes in decimal MB to two decimal places.
@@ -14,14 +16,14 @@ System events are stored separately from sensor CSVs, with Dash forwarding,
 an authenticated local viewer, and optional ESP32 HTTPS remote downloads.
 See [System logs and remote downloads](docs/system-logs.md) for limits and setup.
 
-Both firmware components live in `motorsport-data-acquisition` and share **Dash Link**, the BLE connection protocol.
+Both firmware components live in `ApexiLabs/devices` and share **Dash Link**, the BLE connection protocol.
 
 | Component | PlatformIO target | Entry point |
 | --- | --- | --- |
-| Apexi Logger — TinyC6 | `logger-tinyc6` | `src/logger_main.cpp` |
-| Apexi Logger — classic ESP32 | `logger-esp32` | `src/logger_main.cpp` |
-| Apexi Logger — NodeMCU (legacy, no BLE) | `logger-nodemcuv2` | `src/logger_main.cpp` |
-| Apexi Dash — Waveshare S3 1.28-inch | `dash-waveshare-s3-128` | `src/dash_main.cpp` |
+| Apexi Logger — TinyC6 | `logger-tinyc6` | `logger/firmware/src/logger_main.cpp` |
+| Apexi Logger — classic ESP32 | `logger-esp32` | `logger/firmware/src/logger_main.cpp` |
+| Apexi Logger — NodeMCU (legacy, no BLE) | `logger-nodemcuv2` | `logger/firmware/src/logger_main.cpp` |
+| Apexi Dash — Waveshare S3 1.28-inch | `dash-waveshare-s3-128` | `dash/firmware/src/dash_main.cpp` |
 
 These replace the previous `tinyc6`, `esp32dev`, `nodemcuv2`, and `waveshare_dash` environment names. The legacy OTA environment is now `logger-nodemcuv2-ota`. The default remains the NodeMCU logger; select the target explicitly for either ESP32 board.
 
@@ -51,27 +53,27 @@ For the detailed BOM, pin table, wiring guidance, and commissioning steps, see [
 
 Primary source files:
 - board target: [`platformio.ini`](platformio.ini)
-- pin map: [`include/PinDefinitions.h`](include/PinDefinitions.h)
-- firmware feature defaults: [`include/AppConfig.h`](include/AppConfig.h)
+- pin map: [`shared/libraries/PinDefinitions.h`](shared/libraries/PinDefinitions.h)
+- firmware feature defaults: [`shared/libraries/AppConfig.h`](shared/libraries/AppConfig.h)
 - wiring and hardware details: [`docs/hardware-setup.md`](docs/hardware-setup.md)
 
 ## Project layout
 - [`platformio.ini`](platformio.ini)
-- [`include/AppConfig.h`](include/AppConfig.h)
-- [`include/PinDefinitions.h`](include/PinDefinitions.h)
-- [`include/LiveUpload.h`](include/LiveUpload.h)
-- [`src/logger_main.cpp`](src/logger_main.cpp)
-- [`src/LiveUpload.cpp`](src/LiveUpload.cpp)
-- [`src/DashLink.cpp`](src/DashLink.cpp)
-- [`src/dash_main.cpp`](src/dash_main.cpp)
+- [`shared/libraries/AppConfig.h`](shared/libraries/AppConfig.h)
+- [`shared/libraries/PinDefinitions.h`](shared/libraries/PinDefinitions.h)
+- [`logger/firmware/include/LiveUpload.h`](logger/firmware/include/LiveUpload.h)
+- [`logger/firmware/src/logger_main.cpp`](logger/firmware/src/logger_main.cpp)
+- [`logger/firmware/src/LiveUpload.cpp`](logger/firmware/src/LiveUpload.cpp)
+- [`logger/firmware/src/DashLink.cpp`](logger/firmware/src/DashLink.cpp)
+- [`dash/firmware/src/dash_main.cpp`](dash/firmware/src/dash_main.cpp)
 - [`docs/hardware-setup.md`](docs/hardware-setup.md)
 - [`docs/repo-contracts.md`](docs/repo-contracts.md)
 - [`docs/production-hardware-qualification.md`](docs/production-hardware-qualification.md)
 
 ## Build and flash
 1. Install PlatformIO Core or use the PlatformIO VS Code extension.
-2. Wire the NodeMCU, TinyC6, or classic ESP32 DevKit using the matching GPIO table in [`docs/hardware-setup.md`](docs/hardware-setup.md), then review [`include/PinDefinitions.h`](include/PinDefinitions.h).
-3. Review sensor ranges, timing values, live upload settings, and optional hardware toggles in [`include/AppConfig.h`](include/AppConfig.h). Copy `include/AppSecrets.example.h` to the ignored `include/AppSecrets.h` and set Wi-Fi plus MQTT or HTTPS credentials there.
+2. Wire the NodeMCU, TinyC6, or classic ESP32 DevKit using the matching GPIO table in [`docs/hardware-setup.md`](docs/hardware-setup.md), then review [`shared/libraries/PinDefinitions.h`](shared/libraries/PinDefinitions.h).
+3. Review sensor ranges, timing values, live upload settings, and optional hardware toggles in [`shared/libraries/AppConfig.h`](shared/libraries/AppConfig.h). Copy `shared/libraries/AppSecrets.example.h` to the ignored `shared/libraries/AppSecrets.h` and set Wi-Fi plus MQTT or HTTPS credentials there.
 4. Run [`scripts/verify-repo.sh`](scripts/verify-repo.sh) `--fast` for host-side verification and contract checks, and `--full` when the local PlatformIO toolchain is available.
 5. Build and upload the required environment with `pio run -e logger-tinyc6 -t upload --upload-port /dev/cu.usbmodem1101`, replacing the environment and port when needed.
 6. Open the serial monitor at 115200 baud with `pio device monitor`. If a CH340-based board stays in reset, open the port with DTR and RTS inactive or press the board's `RST` button once.
@@ -103,7 +105,7 @@ LCD and web readings hold the last valid number in amber during stale data, disc
 
 The **Live LCD** web card mirrors the actual 240×240 render buffer for remote layout checks. It downloads changed frames at most once per second, supports pause/resume and opening a snapshot, and marks retained images stale if Dash becomes unreachable. It shows rendered pixels, not a camera view of the physical panel.
 
-Dash joins the station network from the ignored `include/AppSecrets.h`, keeping its recovery AP available. Its LCD uses a black background, and its live web UI matches Logger's theme. Password-protected OTA uses `APEXI_OTA_PASSWORD`; after the first USB installation, build Dash and run `./.venv/bin/python scripts/upload-dash-ota.py <dash-ip>`. See [Dash commissioning and OTA](docs/hardware-setup.md#waveshare-esp32-s3-dash) for setup, status fields, and network requirements.
+Dash joins the station network from the ignored `shared/libraries/AppSecrets.h`, keeping its recovery AP available. Its LCD uses a black background, and its live web UI matches Logger's theme. Password-protected OTA uses `APEXI_OTA_PASSWORD`; after the first USB installation, build Dash and run `./.venv/bin/python scripts/upload-dash-ota.py <dash-ip>`. See [Dash commissioning and OTA](docs/hardware-setup.md#waveshare-esp32-s3-dash) for setup, status fields, and network requirements.
 
 Build and flash the separate dash image with:
 
@@ -116,7 +118,7 @@ PlatformIO writes an update image to `.pio/build/dash-waveshare-s3-128/firmware.
 
 ## Wi-Fi firmware updates
 
-The ESP8266 supports password-protected Arduino OTA updates while connected in station mode. Set a strong, unique `APEXI_OTA_PASSWORD` in the ignored `include/AppSecrets.h`; OTA remains locked when that value is empty. The local `/api/live` response reports `ota_enabled` and `ota_ready` so update availability can be checked without exposing the password.
+The ESP8266 supports password-protected Arduino OTA updates while connected in station mode. Set a strong, unique `APEXI_OTA_PASSWORD` in the ignored `shared/libraries/AppSecrets.h`; OTA remains locked when that value is empty. The local `/api/live` response reports `ota_enabled` and `ota_ready` so update availability can be checked without exposing the password.
 
 The first OTA-capable firmware must be installed over USB. After that, build and upload on the same trusted network with the helper script, which reads the password from the ignored secrets header without printing it:
 
@@ -128,7 +130,7 @@ An IP address can be supplied instead if `.local` discovery is unavailable. Do n
 
 ## Live streaming
 
-The firmware includes a live telemetry publisher for near-real-time upload. MQTT remains the normal LAN transport. Set `APEXI_HTTPS_UPLOAD_ENABLED=1` to use the Access-protected HTTPS compatibility transport when the broker is not directly reachable. Configure the Cloudflare Access service-token pair and the scoped app device token only in the ignored `include/AppSecrets.h` created from [`include/AppSecrets.example.h`](include/AppSecrets.example.h). HTTPS validates the public certificate chain against ISRG Root X1; it never disables TLS verification.
+The firmware includes a live telemetry publisher for near-real-time upload. MQTT remains the normal LAN transport. Set `APEXI_HTTPS_UPLOAD_ENABLED=1` to use the Access-protected HTTPS compatibility transport when the broker is not directly reachable. Configure the Cloudflare Access service-token pair and the scoped app device token only in the ignored `shared/libraries/AppSecrets.h` created from [`shared/libraries/AppSecrets.example.h`](shared/libraries/AppSecrets.example.h). HTTPS validates the public certificate chain against ISRG Root X1; it never disables TLS verification.
 
 The local dashboard separates connectivity, hardware, storage, and diagnostic state. It shows the active upstream endpoint, whether the server is connected, whether remote management is enabled locally, and the applied remote-configuration version. Open `/settings` to change the server host, port, live-upload enable flag, primary and secondary NTP servers, POSIX timezone rule, displayed timezone label, and the optional remote-management flag. The page uses HTTP Digest authentication with username `admin` and the device's OTA password. These settings are stored in a versioned, checksummed flash-backed EEPROM record and survive power loss. For HTTPS, the Cloudflare Access client ID and secret may be compiled from the ignored secrets header or replaced through write-only settings fields. Existing credential values are never returned in the page or API; leaving a field blank keeps the current value. Saving settings restarts the logger so the new endpoint, credentials, and clock configuration are applied cleanly.
 
@@ -161,7 +163,7 @@ Before using the logger on track:
 2. Check `/api/live` under `system` for `upload_enabled: true`, `upload_connected: true`, the expected `upload_session_id`, an increasing `upload_sequence`, and an empty `last_upload_error`.
 3. Confirm the corresponding session appears in the telemetry app's **Ungrouped Sessions**, then attach it to the prepared event.
 
-Powering down, losing Wi-Fi, or losing MQTT marks the stream offline through retained status or the MQTT last will. The telemetry app owns durable session finalization; the device does not finalize server-side data. Follow the telemetry app [Live Event Operations runbook](https://github.com/V5U2/motorsport-telemetry-app/blob/main/docs/live-events.md) for the complete race-day procedure.
+Powering down, losing Wi-Fi, or losing MQTT marks the stream offline through retained status or the MQTT last will. The telemetry app owns durable session finalization; the device does not finalize server-side data. Follow the telemetry app [Live Event Operations runbook](https://github.com/ApexiLabs/platform/blob/main/docs/live-events.md) for the complete race-day procedure.
 
 Current limits:
 - MQTT and Access-authenticated HTTPS emit the same versioned live/status payloads.
@@ -235,7 +237,7 @@ Example live payload shape:
 - On ESP32, hold the UI button continuously for five seconds during boot to clear owner credentials and runtime settings while preserving the immutable device identity.
 
 ## Web endpoints
-The checked-in default is station mode. Create the ignored `include/AppSecrets.h` from the example and provide a 2.4 GHz SSID/password; `fast_connect`-style BSSID/channel pinning is not used, so the ESP8266 performs a normal network scan. If station association times out, firmware falls back to the open 2.4 GHz SoftAP `MDA-LOGGER` at `http://192.168.44.1` on channel 6. Set `AppConfig::kWifi.apPassword` to an 8+ character WPA2 key if a closed fallback AP is required.
+The checked-in default is station mode. Create the ignored `shared/libraries/AppSecrets.h` from the example and provide a 2.4 GHz SSID/password; `fast_connect`-style BSSID/channel pinning is not used, so the ESP8266 performs a normal network scan. If station association times out, firmware falls back to the open 2.4 GHz SoftAP `MDA-LOGGER` at `http://192.168.44.1` on channel 6. Set `AppConfig::kWifi.apPassword` to an 8+ character WPA2 key if a closed fallback AP is required.
 - `/` compact phone-friendly sensor dashboard with a basic fault summary
 - `/diagnostics` detailed connectivity, hardware, storage, transport, and sensor diagnostics, including Apexi Dash Bluetooth connection and link status. The upstream endpoint row displays only the server hostname; settings and `upload_server` retain the full endpoint. TinyC6 builds enable CSV logging to the stacked RTC Logger Shield microSD card (CS GPIO18).
 - `/api/live` current readings and system state as JSON, including TinyC6 battery voltage with configurable calibration gain, estimated 1S LiPo percentage, USB/5V presence and voltage trend. Battery diagnostics are estimates, not a fuel gauge or definitive charging/completion status; see [hardware setup](docs/hardware-setup.md).

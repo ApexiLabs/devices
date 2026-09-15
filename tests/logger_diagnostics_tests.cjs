@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const source = fs.readFileSync(require('node:path').join(__dirname, '../src/WebUi.cpp'), 'utf8');
+const source = fs.readFileSync(require('node:path').join(__dirname, '../logger/firmware/src/WebUi.cpp'), 'utf8');
 const queuePolicy = source.match(/function normalUploadQueue\(system\) \{[\s\S]*?\n    \}/)[0];
 const issueBlock = source.slice(source.indexOf('const issues = [];'), source.indexOf('if (issues.length)'));
 const healthy = {adc_ready:true,upload_enabled:true,upload_connected:true,store_forward_enabled:true,store_forward_ready:true,store_forward_pending_records:2,upload_success_age_ms:500,last_upload_error:'Replaying onboard queue: 2 pending'};

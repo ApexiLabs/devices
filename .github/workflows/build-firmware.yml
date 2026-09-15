@@ -84,3 +84,17 @@ jobs:
           name: firmware-logger-nodemcuv2-logger-esp32-logger-tinyc6-dash-waveshare-s3-128
           path: dist/*
           if-no-files-found: error
+
+      - name: Upload Logger artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apexi-logger-firmware
+          path: dist/apexi-logger-*
+          if-no-files-found: error
+
+      - name: Upload Dash artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apexi-dash-firmware
+          path: dist/apexi-dash-*
+          if-no-files-found: error

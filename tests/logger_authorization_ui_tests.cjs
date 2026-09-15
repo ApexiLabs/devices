@@ -1,5 +1,5 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-const source=fs.readFileSync(require('node:path').join(__dirname,'../src/WebUi.cpp'),'utf8');
+const source=fs.readFileSync(require('node:path').join(__dirname,'../logger/firmware/src/WebUi.cpp'),'utf8');
 const start=source.indexOf("(()=>{const button=document.getElementById('authorizeDevice');");
 assert.ok(start>=0);
 const script=source.slice(start,source.indexOf('</script>',start));

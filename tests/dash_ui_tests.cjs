@@ -1,5 +1,5 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-const source=fs.readFileSync(require('node:path').join(__dirname,'../include/DashWebUi.h'),'utf8');
+const source=fs.readFileSync(require('node:path').join(__dirname,'../dash/firmware/include/DashWebUi.h'),'utf8');
 const script=source.match(/<script>([\s\S]*?)<\/script>/)[1];
 assert.match(source,/<article class="card"><h2>Live LCD/);
 assert.match(source,/<article class="card settings-card"><h2 id="readings-heading">Sensor readings/);

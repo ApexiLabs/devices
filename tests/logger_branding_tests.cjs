@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
-const source=fs.readFileSync(path.join(__dirname,'../src/WebUi.cpp'),'utf8');
-const branding=fs.readFileSync(path.join(__dirname,'../include/LoggerBranding.h'),'utf8');
+const source=fs.readFileSync(path.join(__dirname,'../logger/firmware/src/WebUi.cpp'),'utf8');
+const branding=fs.readFileSync(path.join(__dirname,'../logger/firmware/include/LoggerBranding.h'),'utf8');
 const [head,mark]=[...branding.matchAll(/R"BRAND\(([\s\S]*?)\)BRAND"/g)].map(m=>m[1]);
 assert.match(head,/family=Inter/);assert.match(head,/system-ui/);
 assert.match(mark,/aria-label="ApexiLabs Logger home"/);

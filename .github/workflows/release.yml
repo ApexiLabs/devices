@@ -98,8 +98,9 @@ jobs:
           jq --null-input \
             --arg version "$RELEASE_TAG" \
             --arg commit "$RELEASE_COMMIT" \
-            '{schema_version: 1, version: $version, commit_sha: $commit, release_security_profile: "development-only", security_classification: "esp32-security-classification.json", targets: [{"environment":"logger-nodemcuv2","production_supported":false,"flash_size":"4MB","partition_layout":"framework default","firmware":"apexi-logger-nodemcuv2-firmware.bin","elf":"apexi-logger-nodemcuv2-firmware.elf"},{"environment":"logger-esp32","production_supported":false,"flash_size":"16MB","partition_layout":"partitions/esp32-16mb-store-forward.csv","firmware":"apexi-logger-esp32-firmware.bin","elf":"apexi-logger-esp32-firmware.elf","factory_image":"apexi-logger-esp32-factory.bin"},{"environment":"logger-tinyc6","production_supported":false,"flash_size":"8MB","partition_layout":"framework default_8MB.csv","firmware":"apexi-logger-tinyc6-firmware.bin","elf":"apexi-logger-tinyc6-firmware.elf","factory_image":"apexi-logger-tinyc6-factory.bin"},{"environment":"dash-waveshare-s3-128","production_supported":false,"flash_size":"16MB","partition_layout":"framework default_8MB.csv","firmware":"apexi-dash-waveshare-s3-128-firmware.bin","elf":"apexi-dash-waveshare-s3-128-firmware.elf","factory_image":"apexi-dash-waveshare-s3-128-factory.bin"}]}' \
+            '{schema_version: 1, version: $version, commit_sha: $commit, release_security_profile: "development-only", security_classification: "esp32-security-classification.json", targets: [{"environment":"logger-nodemcuv2","production_supported":false,"flash_size":"4MB","partition_layout":"framework default","firmware":"apexi-logger-nodemcuv2-firmware.bin","elf":"apexi-logger-nodemcuv2-firmware.elf"},{"environment":"logger-esp32","production_supported":false,"flash_size":"16MB","partition_layout":"logger/firmware/partitions/esp32-16mb-store-forward.csv","firmware":"apexi-logger-esp32-firmware.bin","elf":"apexi-logger-esp32-firmware.elf","factory_image":"apexi-logger-esp32-factory.bin"},{"environment":"logger-tinyc6","production_supported":false,"flash_size":"8MB","partition_layout":"framework default_8MB.csv","firmware":"apexi-logger-tinyc6-firmware.bin","elf":"apexi-logger-tinyc6-firmware.elf","factory_image":"apexi-logger-tinyc6-factory.bin"},{"environment":"dash-waveshare-s3-128","production_supported":false,"flash_size":"16MB","partition_layout":"framework default_8MB.csv","firmware":"apexi-dash-waveshare-s3-128-firmware.bin","elf":"apexi-dash-waveshare-s3-128-firmware.elf","factory_image":"apexi-dash-waveshare-s3-128-factory.bin"}]}' \
             > dist/build-metadata.json
+          python scripts/product_release_metadata.py
           (
             cd dist
             sha256sum \
@@ -115,6 +116,8 @@ jobs:
               apexi-dash-waveshare-s3-128-firmware.elf \
               apexi-dash-waveshare-s3-128-factory.bin \
               esp32-security-classification.json \
+              logger-build-metadata.json \
+              dash-build-metadata.json \
               build-metadata.json \
               > SHA256SUMS
           )
@@ -128,7 +131,7 @@ jobs:
           test "$(jq '.targets | length' dist/build-metadata.json)" -eq 4
           test "$(jq -r .release_security_profile dist/build-metadata.json)" = "development-only"
           test "$(jq -r .production_eligible dist/esp32-security-classification.json)" = "false"
-          test ! -e include/AppSecrets.h
+          test ! -e shared/libraries/AppSecrets.h
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
@@ -150,6 +153,8 @@ jobs:
             dist/apexi-dash-waveshare-s3-128-factory.bin
             dist/esp32-security-classification.json
             dist/build-metadata.json
+            dist/logger-build-metadata.json
+            dist/dash-build-metadata.json
             dist/SHA256SUMS
 
       - name: Verify exact published assets

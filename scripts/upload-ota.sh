@@ -2,7 +2,7 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
-SECRETS_FILE="$ROOT_DIR/include/AppSecrets.h"
+SECRETS_FILE="$ROOT_DIR/shared/libraries/AppSecrets.h"
 OTA_TARGET=${1:-mda-logger.local}
 
 if [ ! -f "$SECRETS_FILE" ]; then

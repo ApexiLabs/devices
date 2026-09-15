@@ -6,9 +6,12 @@
 .vscode/
 .build-tests/
 .omx/
-src/idf_component.yml
+logger/firmware/src/idf_component.yml
 __pycache__/
 *.pyc
-include/AppSecrets.h
+shared/libraries/AppSecrets.h
 
 .verification-venv/
+
+dist/
+published/

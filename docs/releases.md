@@ -42,3 +42,11 @@ Both CI and release publication build `logger-nodemcuv2`, `logger-esp32`, `logge
 `logger-esp32-production-candidate` separately proves the fail-closed firmware gate compiles; it is not a production approval or a published replacement for a development image. The pioarduino SDK audit reads `framework-arduinoespressif32-libs/esp32/sdkconfig` under the PlatformIO packages directory. CI installs the esptool 5 CLI dependencies explicitly; cryptographic release tests use the pinned `requirements-production-verification.txt` packages in a separate `.verification-venv` to avoid conflicting esptool versions.
 
 The classic ESP32 and its production-candidate compile use link-time size optimization and disable unused C++ exception/unwind metadata. Arduino library error logging and application system events remain available. The HTTPS exchange buffer starts zero-initialized so it occupies BSS rather than storing an otherwise empty buffer in flash. `scripts/esp32-lto.py` aligns linker and archive tooling with these flags. The existing 2 MiB OTA slots and queue offsets are unchanged; builds fail if the application exceeds its slot.
+
+## Product identities
+
+Releases also contain `logger-build-metadata.json` and `dash-build-metadata.json`, covered by the same immutable checksums. Each records firmware version, commit, target assets and the separately maintained hardware revision. See [repository layout](repository-layout.md). Existing aggregate metadata and filenames are retained.
+
+## Routine CI artifact retention
+
+Pull requests compile every CI target and prepare/verify the artifact set, but do not upload routine build artifacts. Main-branch and manually dispatched builds retain the aggregate archive for existing consumers and separate Logger/Dash archives for product selection; these routine archives expire after seven days. The Logger archive includes its ESP32 security classification. Immutable GitHub Release assets use the separate release workflow and are unchanged by this retention policy.

@@ -79,8 +79,30 @@ jobs:
             > dist/esp32-security-classification.json
 
       - name: Upload firmware artifacts
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: firmware-logger-nodemcuv2-logger-esp32-logger-tinyc6-dash-waveshare-s3-128
           path: dist/*
           if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Logger artifacts
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: apexi-logger-firmware
+          path: |
+            dist/apexi-logger-*
+            dist/esp32-security-classification.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Dash artifacts
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: apexi-dash-firmware
+          path: dist/apexi-dash-*
+          if-no-files-found: error
+          retention-days: 7

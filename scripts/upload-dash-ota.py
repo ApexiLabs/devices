@@ -16,7 +16,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     binary = root / ".pio/build/dash-waveshare-s3-128/firmware.bin"
     partitions = root / ".pio/build/dash-waveshare-s3-128/partitions.bin"
-    secrets = (root / "include/AppSecrets.h").read_text()
+    secrets = (root / "shared/libraries/AppSecrets.h").read_text()
     match = re.search(r'^\s*#define\s+APEXI_OTA_PASSWORD\s+"([^"\n]+)"', secrets, re.M)
     if not match:
         raise ValueError("APEXI_OTA_PASSWORD must be configured locally")

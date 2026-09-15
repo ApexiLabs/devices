@@ -9,7 +9,7 @@ This is the revision-controlled qualification plan and result index for the prod
 A hardware revision is production-qualified only when all of the following are attached to its release record:
 
 - a completed hardware profile and as-built BOM with manufacturer part numbers and board revisions;
-- an as-built pinout checked against [`include/PinDefinitions.h`](../include/PinDefinitions.h);
+- an as-built pinout checked against [`shared/libraries/PinDefinitions.h`](../shared/libraries/PinDefinitions.h);
 - calibration results for every fitted sensor channel at 4, 8, 12, 16, and 20 mA;
 - power, RTC, reboot, network-outage/replay, thermal, vibration, and soak results;
 - a completed manufacturing checklist for the exact assembly;
@@ -30,7 +30,7 @@ Complete this table before electrical testing. Values shown as firmware assumpti
 | ESP32 module marking | Exact can/module marking | None | TBD |
 | Physical flash capacity | Read-back and tool used | 16 MB build target | TBD |
 | PlatformIO environment | Exact environment | `logger-esp32-production-candidate` for acceptance | TBD |
-| Partition table | File and checksum | `partitions/esp32-16mb-store-forward.csv` | TBD |
+| Partition table | File and checksum | `logger/firmware/partitions/esp32-16mb-store-forward.csv` | TBD |
 | ADC | Manufacturer, SKU, revision, I2C address | ADS1115-compatible, address `0x48` | TBD |
 | Pressure receiver | Manufacturer, SKU, revision | DFRobot SEN0262-compatible | TBD |
 | Temperature receiver | Manufacturer, SKU, revision | DFRobot SEN0262-compatible | TBD |

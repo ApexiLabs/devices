@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class SecuritySurfaceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.web_ui = (ROOT / "src" / "WebUi.cpp").read_text(encoding="utf-8")
+        cls.web_ui = (ROOT / "logger/firmware/src" / "WebUi.cpp").read_text(encoding="utf-8")
 
     def test_live_json_does_not_reference_secret_fields(self) -> None:
         start = self.web_ui.index("String WebUi::liveJson() const")
@@ -31,7 +31,7 @@ class SecuritySurfaceTests(unittest.TestCase):
         self.assertGreaterEqual(self.web_ui.count("server_.send(410"), 2)
 
     def test_rotation_status_contains_ack_but_no_bearer(self) -> None:
-        live_upload = (ROOT / "src" / "LiveUpload.cpp").read_text(encoding="utf-8")
+        live_upload = (ROOT / "logger/firmware/src" / "LiveUpload.cpp").read_text(encoding="utf-8")
         start = live_upload.index("String LiveUpload::buildStatusJson")
         end = live_upload.index("String LiveUpload::buildSnapshotJson", start)
         status_builder = live_upload[start:end]

@@ -38,10 +38,10 @@ grep -q "docs/releases.md" "$ROOT_DIR/README.md" || \
   fail "README.md must link the firmware release and rollback runbook"
 
 for macro in MDA_PIN_SPI_MISO MDA_PIN_SPI_MOSI MDA_PIN_SPI_SCLK PIN_TFT_CS PIN_TFT_DC PIN_TFT_RST PIN_STATUS_LED; do
-  grep -q "#define $macro" "$ROOT_DIR/include/PinDefinitions.h" || fail "missing $macro in include/PinDefinitions.h"
+  grep -q "#define $macro" "$ROOT_DIR/shared/libraries/PinDefinitions.h" || fail "missing $macro in shared/libraries/PinDefinitions.h"
 done
 
-LOGGER_TFT_SETUP="$ROOT_DIR/include/LoggerDisplayTFTSetup.h"
+LOGGER_TFT_SETUP="$ROOT_DIR/logger/firmware/include/LoggerDisplayTFTSetup.h"
 grep -q "#define TFT_MISO MDA_PIN_SPI_MISO" "$LOGGER_TFT_SETUP" || fail "LoggerDisplayTFTSetup.h is not wired to MDA_PIN_SPI_MISO"
 grep -q "#define TFT_MOSI MDA_PIN_SPI_MOSI" "$LOGGER_TFT_SETUP" || fail "LoggerDisplayTFTSetup.h is not wired to MDA_PIN_SPI_MOSI"
 grep -q "#define TFT_SCLK MDA_PIN_SPI_SCLK" "$LOGGER_TFT_SETUP" || fail "LoggerDisplayTFTSetup.h is not wired to MDA_PIN_SPI_SCLK"
@@ -52,24 +52,24 @@ grep -q "#define TFT_RST  PIN_TFT_RST" "$LOGGER_TFT_SETUP" || fail "LoggerDispla
 grep -q "docs/hardware-setup.md" "$ROOT_DIR/README.md" || fail "README.md does not point to docs/hardware-setup.md"
 grep -q "docs/repo-contracts.md" "$ROOT_DIR/AGENTS.md" || fail "AGENTS.md does not point to docs/repo-contracts.md"
 
-if grep -Eq 'LittleFS\.begin\([[:space:]]*true' "$ROOT_DIR/src/StoreForwardQueue.cpp"; then
+if grep -Eq 'LittleFS\.begin\([[:space:]]*true' "$ROOT_DIR/logger/firmware/src/StoreForwardQueue.cpp"; then
   fail "store-and-forward must not format LittleFS automatically on mount failure"
 fi
-grep -q 'LittleFS.begin(false' "$ROOT_DIR/src/StoreForwardQueue.cpp" || \
+grep -q 'LittleFS.begin(false' "$ROOT_DIR/logger/firmware/src/StoreForwardQueue.cpp" || \
   fail "store-and-forward must mount LittleFS without automatic formatting"
 
-git -C "$ROOT_DIR" check-ignore --quiet include/AppSecrets.h || \
-  fail "include/AppSecrets.h must remain ignored"
-grep -q "APEXI_OTA_PASSWORD" "$ROOT_DIR/include/AppSecrets.example.h" || \
-  fail "include/AppSecrets.example.h must document APEXI_OTA_PASSWORD"
+git -C "$ROOT_DIR" check-ignore --quiet shared/libraries/AppSecrets.h || \
+  fail "shared/libraries/AppSecrets.h must remain ignored"
+grep -q "APEXI_OTA_PASSWORD" "$ROOT_DIR/shared/libraries/AppSecrets.example.h" || \
+  fail "shared/libraries/AppSecrets.example.h must document APEXI_OTA_PASSWORD"
 grep -q "upload_protocol = espota" "$ROOT_DIR/platformio.ini" || \
   fail "platformio.ini must provide the OTA upload environment"
 grep -A8 -q 'APEXI_PRODUCTION_SECURITY_REQUIRED=1' "$ROOT_DIR/platformio.ini" || \
   fail "production candidate must compile the fail-closed runtime security gate"
 grep -q 'check_production_security.py' "$ROOT_DIR/docs/production-security.md" || \
   fail "production security runbook must name the machine-checkable audit"
-if git -C "$ROOT_DIR" ls-files --error-unmatch -- include/AppSecrets.h >/dev/null 2>&1; then
-  fail "include/AppSecrets.h contains local credentials and must not be tracked"
+if git -C "$ROOT_DIR" ls-files --error-unmatch -- shared/libraries/AppSecrets.h >/dev/null 2>&1; then
+  fail "shared/libraries/AppSecrets.h contains local credentials and must not be tracked"
 fi
 
 
@@ -84,6 +84,13 @@ for workflow in "$ROOT_DIR/.github/workflows/build-firmware.yml" "$ROOT_DIR/.git
   grep -q -- "-e logger-esp32-production-candidate" "$workflow" || fail "missing production candidate build"
   grep -q "test_signed_release_crypto.py" "$workflow" || fail "missing real signature verification tests"
   grep -q "rich-click<2" "$workflow" || fail "missing esptool 5 CLI dependency"
+done
+
+for product in logger dash; do
+  grep -q "dist/$product-build-metadata.json" "$ROOT_DIR/.github/workflows/release.yml" || \
+    fail "release workflow must publish $product firmware identity"
+  grep -q "^              $product-build-metadata.json" "$ROOT_DIR/.github/workflows/release.yml" || \
+    fail "release checksums must include $product firmware identity"
 done
 
 echo "repo-contracts: ok"

@@ -46,3 +46,7 @@ The classic ESP32 and its production-candidate compile use link-time size optimi
 ## Product identities
 
 Releases also contain `logger-build-metadata.json` and `dash-build-metadata.json`, covered by the same immutable checksums. Each records firmware version, commit, target assets and the separately maintained hardware revision. See [repository layout](repository-layout.md). Existing aggregate metadata and filenames are retained.
+
+## Routine CI artifact retention
+
+Pull requests compile every CI target and prepare/verify the artifact set, but do not upload routine build artifacts. Main-branch and manually dispatched builds retain the aggregate archive for existing consumers and separate Logger/Dash archives for product selection; these routine archives expire after seven days. The Logger archive includes its ESP32 security classification. Immutable GitHub Release assets use the separate release workflow and are unchanged by this retention policy.

@@ -27,6 +27,7 @@ class HttpsExchange {
     int tlsError = 0;
     uint32_t durationMs = 0;
     bool reused = false;
+    bool permanentRejection = false;
     char body[kBodyLimit + 1]{};
   };
 

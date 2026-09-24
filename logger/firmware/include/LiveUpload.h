@@ -20,6 +20,7 @@
 #include "UploadEvidence.h"
 #include "HttpsWorker.h"
 #include "HttpsPacing.h"
+#include "UploadRecovery.h"
 class LoggerAuthorization;
 
 class LiveUpload {
@@ -55,6 +56,12 @@ class LiveUpload {
   uint32_t lastSequence() const;
   int lastHttpStatus() const { return lastHttpStatus_; }
   UploadPerformance performance() const {return performance_;}
+  size_t rejectedUploadCount() const { return storeForwardQueue_.rejectedRecords(); }
+  bool rejectedUploadPresent(size_t slot) const { return storeForwardQueue_.rejectedSlotPresent(slot); }
+  bool readRejectedUpload(size_t slot, String &payload, int &status) const {
+    return storeForwardQueue_.readRejected(slot, payload, status);
+  }
+  String rejectionArchiveError() const { return rejectionArchiveError_; }
   bool storeForwardEnabled() const;
   bool storeForwardReady() const;
   uint32_t storeForwardPendingRecords() const;
@@ -85,6 +92,7 @@ class LiveUpload {
   bool submitHttps(Operation operation,const String &payload);
   Operation operation_=Operation::None;
   HttpsPacing pacing_;
+  UploadRecovery recovery_;
   bool workerReady_=false,statusRequested_=true,fallbackRequested_=false,backoff_=false,durableInFlight_=false;
   uint32_t completedMs_=0;
   String inFlightPayload_,volatilePayload_;
@@ -93,6 +101,7 @@ class LiveUpload {
   bool batchEnabled_=false,batchAcknowledged_=false;
   size_t batchAckIndex_=0;
 #endif
+  String rejectionArchiveError_;
   bool reconnect(uint32_t nowMs);
   void publishOfflineStatusAndDisconnect();
   bool publishStatus(bool connected);

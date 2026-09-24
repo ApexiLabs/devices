@@ -1,4 +1,5 @@
 #include "WebUi.h"
+#include "LiveUpload.h"
 #include "SystemLog.h"
 #include "LoggerBranding.h"
 
@@ -170,6 +171,30 @@ refresh.onclick=load;source.onchange=render;severity.onchange=render;detail.oncl
   server_.on("/diagnostics", HTTP_GET, [this]() { systemLog.add("http_get_diagnostics"); handleDiagnostics(); });
   server_.on("/api/live", HTTP_GET, [this]() { handleLiveJson(); });
   server_.on("/api/files", HTTP_GET, [this]() { handleFilesJson(); });
+  server_.on("/api/upload-rejections", HTTP_GET, [this]() {
+    if (!settingsAuthorized()) return;
+    if (!upload_) { sendLogged(503,"text/plain","Upload recovery unavailable"); return; }
+    server_.sendHeader("Cache-Control","no-store");
+    if (server_.hasArg("slot")) {
+      // Match only the fixed slot allowlist. No supplied filesystem paths.
+      for (size_t slot=0;slot<StoreForwardQueue::kRejectedSlots;++slot) {
+        if (server_.arg("slot") != String(unsigned(slot))) continue;
+        String payload; int status=0;
+        if (!upload_->readRejectedUpload(slot,payload,status)) {
+          sendLogged(404,"text/plain","Recovery record unavailable or corrupt");return;
+        }
+        sendLogged(200,"application/json","{\"http_status\":"+String(status)+",\"payload\":\""+jsonEscape(payload)+"\"}");return;
+      }
+      sendLogged(400,"text/plain","Invalid recovery slot");return;
+    }
+    String body="{\"count\":"+String(unsigned(upload_->rejectedUploadCount()))+",\"slots\":[";
+    bool first=true;
+    for(size_t slot=0;slot<StoreForwardQueue::kRejectedSlots;++slot) {
+      if(!upload_->rejectedUploadPresent(slot))continue;
+      if(!first)body+=',';first=false;body+=String(unsigned(slot));
+    }
+    sendLogged(200,"application/json",body+"]}");
+  });
   server_.on("/settings", HTTP_GET, [this]() { systemLog.add("http_get_settings"); handleSettings(); });
   server_.on("/settings", HTTP_POST, [this]() { systemLog.add("http_post_settings"); handleSettingsSave(); });
   server_.onNotFound([this]() { handleDownload(); });
@@ -438,6 +463,10 @@ String WebUi::liveJson() const {
   json += "\"time_zone\":\"" + jsonEscape(state_.system.timeZone) + "\",";
   json += "\"sd_enabled\":" + String(state_.system.sdEnabled ? "true" : "false") + ",";
   json += "\"sd_ready\":" + String(state_.system.sdReady ? "true" : "false") + ",";
+  json += "\"sd_rows_written\":" + String(state_.system.sdRowsWritten) + ",";
+  json += "\"sd_last_write_age_ms\":" + (state_.system.sdLastWriteAgeMs==UINT32_MAX?String("null"):String(state_.system.sdLastWriteAgeMs)) + ",";
+  json += "\"upload_rejected_records\":" + String(state_.system.rejectedUploads) + ",";
+  json += "\"upload_rejection_archive_error\":\"" + jsonEscape(state_.system.rejectionArchiveError) + "\",";
   json += "\"wifi_ready\":" + String(state_.system.wifiReady ? "true" : "false") + ",";
   json += "\"upload_enabled\":" + String(state_.system.uploadEnabled ? "true" : "false") + ",";
   json += "\"upload_connected\":" + String(state_.system.uploadConnected ? "true" : "false") + ",";
@@ -727,7 +756,7 @@ String WebUi::diagnosticsHtml() const {
     <div class="card"><div class="label">Apexi Dash</div><div class="status"><span>Bluetooth connection</span><span class="state" id="dashStatus">--</span></div><div class="status"><span>Link status</span><span id="dashDetail">--</span></div></div>
     <div class="card"><div class="label">Connectivity</div><div class="status"><span>Server</span><span class="state" id="uploadStatus">--</span></div><div class="status"><span>Protocol</span><span id="uploadProtocol">--</span></div><div class="status"><span>Wi-Fi</span><span id="wifiStatus">--</span></div><div class="status"><span>Remote management</span><span class="state" id="remoteManagementStatus">--</span></div><div class="status"><span>Applied configuration</span><span id="configVersion">--</span></div><div class="status detail-row"><span>Upstream endpoint</span><span id="uploadServer">--</span></div></div>
     <div class="card"><div class="label">Hardware &amp; time</div><div class="status"><span>ADC</span><span class="state" id="adcStatus">--</span></div><div class="status"><span>RTC</span><span class="state" id="rtcStatus">--</span></div><div class="status"><span>Last time sync</span><span id="rtcLastSync">--</span></div><div class="status"><span>OTA updates</span><span class="state" id="otaStatus">--</span></div></div>
-    <div class="card"><div class="label">Storage</div><div class="status"><span>Onboard queue</span><span id="queueStatus">--</span></div><div class="status"><span>Queue capacity</span><span id="queueCapacity">--</span></div><div class="status"><span>Dropped records</span><span id="queueDropped">--</span></div><div class="status"><span>SD logging</span><span class="state" id="sdStatus">--</span></div><div class="status detail-row"><span>Current log file</span><span id="logFile">--</span></div></div>
+    <div class="card"><div class="label">Storage</div><div class="status"><span>Onboard queue</span><span id="queueStatus">--</span></div><div class="status"><span>Queue capacity</span><span id="queueCapacity">--</span></div><div class="status"><span>Upload queue drops</span><span id="queueDropped">--</span></div><div class="status"><span>SD logging</span><span class="state" id="sdStatus">--</span></div><div class="status"><span>SD rows written (this boot)</span><span id="sdRows">--</span></div><div class="status"><span>Last SD write</span><span id="sdAge">--</span></div><div class="status"><span>Rejected uploads preserved</span><span id="rejectedUploads">--</span></div><div class="status detail-row"><span>Recovery archive</span><span id="rejectionError">--</span></div><div class="status detail-row"><span>Current log file</span><span id="logFile">--</span></div></div>
     <div class="card"><div class="label">Transport</div><div class="status detail-row"><span>Upload session</span><span id="uploadSession">--</span></div><div class="status"><span>Upload sequence</span><span id="uploadSequence">--</span></div><div class="status detail-row"><span>Upload error</span><span id="uploadError">No errors</span></div><div class="status detail-row"><span>Remote-management error</span><span id="remoteManagementError">No errors</span></div></div>
     <div class="card"><div class="label">Hardware errors</div><div class="status detail-row"><span>Queue</span><span id="queueError">No errors</span></div><div class="status detail-row"><span>RTC</span><span id="rtcError">No errors</span></div><div class="status detail-row"><span>Logging</span><span id="logError">No errors</span></div></div>
     <div class="card"><div class="label">Sensors</div><div id="sensorDiagnostics">--</div></div>
@@ -756,6 +785,7 @@ String WebUi::diagnosticsHtml() const {
       const ota=data.system.ota_enabled?(data.system.ota_ready?'READY':'LOCKED'):'DISABLED'; state('otaStatus',ota,ota==='READY'?'ok':(ota==='LOCKED'?'warn':''));
       text('queueStatus',data.system.store_forward_enabled?(data.system.store_forward_ready?data.system.store_forward_pending_records+' pending / '+Math.round(data.system.store_forward_pending_bytes/1024)+' KiB':'FAULT'):'DISABLED'); text('queueCapacity',Math.round(data.system.store_forward_capacity_bytes/1024)+' KiB'); text('queueDropped',data.system.store_forward_dropped_records);
       const sd=data.system.sd_enabled?(data.system.sd_ready?'READY':'FAULT'):'DISABLED'; state('sdStatus',sd,sd==='READY'?'ok':(sd==='FAULT'?'bad':'')); text('logFile',data.system.current_log_file||'--');
+      text('sdRows',data.system.sd_rows_written??'--'); text('sdAge',data.system.sd_last_write_age_ms==null?'No successful write':`${data.system.sd_last_write_age_ms} ms ago`);text('rejectedUploads',data.system.upload_rejected_records??0);text('rejectionError',data.system.upload_rejection_archive_error||'No archive error');
       text('uploadSession',data.system.upload_session_id||'--'); text('uploadSequence',data.system.upload_sequence); text('uploadError',data.system.last_upload_error||'No errors'); text('remoteManagementError',data.system.remote_management_error||'No errors'); text('queueError',data.system.store_forward_error||'No errors'); text('rtcError',data.system.rtc_error||'No errors'); text('logError',data.system.last_log_error||'No errors');
       const sensors=document.getElementById('sensorDiagnostics'); sensors.innerHTML=''; data.sensors.forEach((sensor)=>{const row=document.createElement('div');row.className='status';const name=document.createElement('span');name.textContent=sensor.name+' ('+sensor.loop_mA.toFixed(2)+' mA)';const fault=document.createElement('span');fault.className='state '+(sensor.fault==='none'?'ok':'bad');fault.textContent=sensor.fault==='none'?'OK':sensor.fault.toUpperCase();row.append(name,fault);sensors.appendChild(row);});
     }

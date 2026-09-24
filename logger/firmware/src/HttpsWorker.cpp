@@ -2,6 +2,7 @@
 #if defined(ESP32)
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include "UploadRecovery.h"
 
 namespace {
 // HTTPClient decodes framing into this bounded sink. A server cannot allocate
@@ -65,6 +66,7 @@ void HttpsWorker::run(void *context) {
     if (request == nullptr) continue;
     auto &result = self.exchange_.workerResult();
     result.status = -1;
+    result.permanentRejection = false;
     result.tlsError=0;
     result.body[0] = '\0';
     const uint32_t started=millis();
@@ -80,15 +82,20 @@ void HttpsWorker::run(void *context) {
     http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     http.setUserAgent("ApexiLabs-Logger/1.0");
     if (http.begin(client, request->url)) {
+      const char *responseHeaders[] = {"X-APX-Retryable"};
+      http.collectHeaders(responseHeaders, 1);
       http.addHeader("Content-Type", "application/json");
       if(request->bearer[0])http.addHeader("Authorization", "Bearer " + String(request->bearer));
       http.addHeader("CF-Access-Client-Id", request->accessId);
       http.addHeader("CF-Access-Client-Secret", request->accessSecret);
       result.status = request->get?http.GET():http.POST(String(request->payload));
+      result.permanentRejection = UploadRecovery::payloadRejected(result.status) &&
+          http.header("X-APX-Retryable") == "false";
       if (result.status > 0) {
         ResponseSink sink(result.body);
         if (http.writeToStream(&sink) < 0) {
           result.status = -1;
+          result.permanentRejection = false;
           result.body[0] = '\0';
         }
       }

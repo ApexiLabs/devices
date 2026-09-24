@@ -20,6 +20,8 @@ class CsvLogger {
   bool isReady() const;
   String currentFileName() const;
   String lastError() const;
+  uint32_t rowsWritten() const { return rowsWritten_; }
+  uint32_t lastWriteAgeMs(uint32_t now) const { return rowsWritten_ ? now - lastWriteMs_ : UINT32_MAX; }
   String listFilesJson() const;
  File openReadOnly(const String &userVisibleName) const;
 
@@ -35,4 +37,6 @@ class CsvLogger {
   File file_;
   uint32_t lastFlushMs_ = 0;
   uint16_t rowsSinceFlush_ = 0;
+  uint32_t rowsWritten_ = 0, lastWriteMs_ = 0;
+  bool incompleteRow_ = false;
 };

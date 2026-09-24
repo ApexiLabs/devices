@@ -59,6 +59,9 @@ struct SystemStatus {
   String timeZone;
   bool sdEnabled;
   bool sdReady;
+  uint32_t sdRowsWritten = 0, sdLastWriteAgeMs = UINT32_MAX;
+  uint32_t rejectedUploads = 0;
+  String rejectionArchiveError;
   bool wifiReady;
   bool uploadEnabled;
   bool uploadConnected;

@@ -406,3 +406,9 @@ See [device authorization](device-authorization.md), [USB provisioning](provisio
 ## Repository ownership
 
 See [repository layout](repository-layout.md) for product firmware, hardware and mechanical locations. Hardware revisions are recorded separately from firmware versions; no custom PCB revision is claimed by this migration.
+
+## Local recording and rejected uploads (APE-101)
+
+HTTPS upload failure does not disable SD CSV logging. On the TinyC6 bench installation, the September 24 inspection found daily CSV files throughout the upload outage; upload-queue drops do not mean that the SD copy was deleted. Confirm both `sd_ready` and advancing `sd_rows_written`/`sd_last_write_age_ms` in `/api/live`, then inspect or export the CSV from `/api/files` and `/download/<name>` when recovering data. Counters reset on boot and describe complete SD API writes, subject to the normal flush interval.
+
+The firmware isolates rejected batch members and preserves explicitly rejected individual payloads in 16 fixed LittleFS recovery slots before advancing replay. The authenticated `/api/upload-rejections` endpoint lists export slots. Archive-full/write errors remain visible separately from SD health. See [the recovery contract](https-replay.md#rejected-payload-recovery-and-local-recording-ape-101). Physical fault injection and SD power-loss acceptance remain separate from host regression coverage.

@@ -49,12 +49,22 @@ bool CsvLogger::logRow(Timekeeper &timekeeper,
   }
   row += "\n";
 
-  if (file_.print(row) == 0) {
+  // A short write is a failure, even when the SD API reports nonzero bytes.
+  // Separate a partial prior row before retrying so subsequent rows stay parseable.
+  if (incompleteRow_ && file_.print("\n") != 1) {
+    lastError_ = "CSV write failed";
+    return false;
+  }
+  incompleteRow_ = false;
+  if (file_.print(row) != row.length()) {
+    incompleteRow_ = true;
     lastError_ = "CSV write failed";
     return false;
   }
 
   rowsSinceFlush_++;
+  if (rowsWritten_ != UINT32_MAX) ++rowsWritten_;
+  lastWriteMs_ = uptimeMs;
   lastError_ = "";
   return true;
 }

@@ -10,6 +10,8 @@
 constexpr uint8_t FILE_READ = 0;
 constexpr uint8_t FILE_WRITE = 1;
 constexpr uint8_t FILE_APPEND = 2;
+// Limit one write to exercise partial archive commits without deleting originals.
+inline size_t nextFileWriteLimit = size_t(-1);
 
 class File {
  public:

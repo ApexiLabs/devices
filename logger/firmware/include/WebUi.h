@@ -13,6 +13,7 @@ using LoggerWebServer = WebServer;
 #include "RuntimeSettings.h"
 #include "Types.h"
 #include "LoggerAuthorization.h"
+class LiveUpload;
 
 class WebUi {
  public:
@@ -29,6 +30,7 @@ class WebUi {
   String ipAddress() const;
   void setManagementPairingCode(const String &pairingCode, uint32_t expiresInSeconds);
   void setAuthorization(LoggerAuthorization &authorization){authorization_=&authorization;}
+  void setUploadRecovery(LiveUpload &upload) { upload_ = &upload; }
 
  private:
   void registerRoutes();
@@ -53,6 +55,7 @@ class WebUi {
   CsvLogger *logger_ = nullptr;
   RuntimeSettings *settings_ = nullptr;
   LoggerAuthorization *authorization_ = nullptr;
+  LiveUpload *upload_ = nullptr;
   AppState state_{};
   bool ready_ = false;
   String mode_;

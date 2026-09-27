@@ -208,6 +208,10 @@ AppState buildState() {
   state.system.ipAddress = webUi.ipAddress();
   state.system.currentLogFile = csvLogger.currentFileName();
   state.system.lastLogError = csvLogger.lastError();
+  state.system.sdRowsWritten = csvLogger.rowsWritten();
+  state.system.sdLastWriteAgeMs = csvLogger.lastWriteAgeMs(millis());
+  state.system.rejectedUploads = liveUpload.rejectedUploadCount();
+  state.system.rejectionArchiveError = liveUpload.rejectionArchiveError();
   state.system.uploadProtocol = liveUpload.protocolName();
   state.system.uploadServer = liveUpload.serverName();
   state.system.uploadSessionId = liveUpload.sessionId();
@@ -541,11 +545,39 @@ void setup() {
   if (networkAllowed) remoteLogs.begin(activeUpload);
   const AppState initialState = buildState();
   dashboard.render(initialState);
+  webUi.setUploadRecovery(liveUpload);
   webUi.publishState(initialState);
   liveUpload.recordCompletedBoot();
 }
 
+void serviceLocalRecording() {
+  // Local acquisition and SD recording run before upload, HTTP UI and management.
+  // No network result or upload queue state gates this path.
+  const uint32_t nowMs = millis();
+  if ((nowMs - lastSampleMs) >= AppConfig::kTiming.sampleIntervalMs) {
+    sampleSensors();
+    lastSampleMs = nowMs;
+  }
+  if ((nowMs - lastLogMs) >= AppConfig::kTiming.loggingIntervalMs) {
+    AppState state = buildState();
+    if (AppConfig::kFeatures.sdLoggingEnabled && csvLogger.isReady()) {
+      if (csvLogger.logRow(timekeeper, state.uptimeMs, state.sensors)) {
+        csvLogger.flushIfNeeded(state.uptimeMs);
+      }
+    }
+    state.system.sdReady = csvLogger.isReady() && csvLogger.lastError().isEmpty();
+    state.system.currentLogFile = csvLogger.currentFileName();
+    state.system.lastLogError = csvLogger.lastError();
+    state.system.sdRowsWritten = csvLogger.rowsWritten();
+    state.system.sdLastWriteAgeMs = csvLogger.lastWriteAgeMs(millis());
+    webUi.publishState(state);
+    lastLogMs = nowMs;
+  }
+
+}
+
 void loop() {
+  serviceLocalRecording();
   loggerAuthorization.loop();
   if(loggerAuthorization.restartRequired()) {
     static uint32_t authorizedMs=millis();
@@ -624,10 +656,6 @@ void loop() {
   const uint32_t nowMs = millis();
   maintainRtcSync(nowMs);
 
-  if ((nowMs - lastSampleMs) >= AppConfig::kTiming.sampleIntervalMs) {
-    sampleSensors();
-    lastSampleMs = nowMs;
-  }
 
   std::array<SensorSnapshot, AppConfig::kSensorCount> dashSamples{};
   for (size_t i = 0; i < sensorChannels.size(); ++i) dashSamples[i] = sensorChannels[i].snapshot();
@@ -635,19 +663,6 @@ void loop() {
   const uint32_t uploadStatusMs=millis();
   dashLink.publishUploadStatus(liveUpload.uploadEvidence(uploadStatusMs),uploadStatusMs);
 
-  if ((nowMs - lastLogMs) >= AppConfig::kTiming.loggingIntervalMs) {
-    AppState state = buildState();
-    if (AppConfig::kFeatures.sdLoggingEnabled && csvLogger.isReady()) {
-      if (csvLogger.logRow(timekeeper, state.uptimeMs, state.sensors)) {
-        csvLogger.flushIfNeeded(state.uptimeMs);
-      }
-    }
-    state.system.sdReady = csvLogger.isReady() && csvLogger.lastError().isEmpty();
-    state.system.currentLogFile = csvLogger.currentFileName();
-    state.system.lastLogError = csvLogger.lastError();
-    webUi.publishState(state);
-    lastLogMs = nowMs;
-  }
 
   if ((nowMs - lastDisplayMs) >= AppConfig::kTiming.displayIntervalMs) {
     const AppState state = buildState();

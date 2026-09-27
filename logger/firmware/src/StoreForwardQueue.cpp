@@ -37,6 +37,7 @@ struct LegacyMetadataV1 {
 bool StoreForwardQueue::begin(const bool enabled, const size_t maximumBytes) {
   enabled_ = enabled;
   ready_ = false;
+  rejectedRecords_ = 0;
   lastError_ = "";
   if (!enabled_) {
     lastError_ = "Onboard store-and-forward disabled";
@@ -108,6 +109,9 @@ bool StoreForwardQueue::begin(const bool enabled, const size_t maximumBytes) {
     return false;
   }
   ready_ = true;
+  rejectedRecords_ = 0;
+  for (size_t slot = 0; slot < kRejectedSlots; ++slot)
+    if (rejectedSlotPresent(slot)) ++rejectedRecords_;
   return true;
 #endif
 }

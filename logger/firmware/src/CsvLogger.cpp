@@ -49,12 +49,22 @@ bool CsvLogger::logRow(Timekeeper &timekeeper,
   }
   row += "\n";
 
-  if (file_.print(row) == 0) {
+  // A short write is a failure, even when the SD API reports nonzero bytes.
+  // Separate a partial prior row before retrying so subsequent rows stay parseable.
+  if (incompleteRow_ && file_.print("\n") != 1) {
+    lastError_ = "CSV write failed";
+    return false;
+  }
+  incompleteRow_ = false;
+  if (file_.print(row) != row.length()) {
+    incompleteRow_ = true;
     lastError_ = "CSV write failed";
     return false;
   }
 
   rowsSinceFlush_++;
+  if (rowsWritten_ != UINT32_MAX) ++rowsWritten_;
+  lastWriteMs_ = uptimeMs;
   lastError_ = "";
   return true;
 }
@@ -143,7 +153,17 @@ bool CsvLogger::ensureFileOpen(
 
   currentFileName_ = desiredName;
   if (newFile || file_.size() == 0) {
-    writeHeaderIfNeeded(sensors);
+    if (!writeHeaderIfNeeded(sensors)) {
+      // The file was empty before the attempted header. Remove its partial
+      // contents so a later logging interval can safely create it again.
+      file_.close();
+      currentFileName_ = "";
+      if (!SD.remove(desiredName.c_str())) {
+        ready_ = false;
+        lastError_ = "CSV header write failed; incomplete file could not be removed";
+      }
+      return false;
+    }
   }
   return true;
 }
@@ -152,10 +172,11 @@ String CsvLogger::normalizeFileName(const String &userVisibleName) const {
   return String(Logic::normalizeLogFileName(userVisibleName.c_str()).c_str());
 }
 
-void CsvLogger::writeHeaderIfNeeded(
+bool CsvLogger::writeHeaderIfNeeded(
     const std::array<SensorSnapshot, AppConfig::kSensorCount> &sensors) {
   if (!file_) {
-    return;
+    lastError_ = "CSV header write failed";
+    return false;
   }
 
   String header = "timestamp,uptime_ms";
@@ -164,8 +185,12 @@ void CsvLogger::writeHeaderIfNeeded(
     header += "," + String(sensor.id) + "_mA";
     header += "," + String(sensor.id) + "_fault";
   }
-  file_.println(header);
+  if (file_.println(header) != header.length() + 2) {
+    lastError_ = "CSV header write failed";
+    return false;
+  }
   file_.flush();
   lastFlushMs_ = 0;
   rowsSinceFlush_ = 0;
+  return true;
 }

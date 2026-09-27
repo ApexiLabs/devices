@@ -13,6 +13,13 @@ class StoreForwardQueue {
   // An append can rotate away a submitted record before HTTP completes.
   // Never acknowledge the replacement head in that case.
   bool popIfMatches(const String &submitted, bool discarded = false);
+  // Preserve a permanently rejected payload before removing it from replay.
+  // Fixed slots never overwrite existing recovery records.
+  static constexpr size_t kRejectedSlots = 16;
+  bool preserveRejected(const String &payload, int httpStatus);
+  bool readRejected(size_t slot, String &payload, int &httpStatus) const;
+  bool rejectedSlotPresent(size_t slot) const;
+  size_t rejectedRecords() const { return rejectedRecords_; }
 
   bool isEnabled() const;
   bool isReady() const;
@@ -63,5 +70,6 @@ class StoreForwardQueue {
 #endif
   bool enabled_ = false;
   bool ready_ = false;
+  size_t rejectedRecords_ = 0;
   String lastError_;
 };

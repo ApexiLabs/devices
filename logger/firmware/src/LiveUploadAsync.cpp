@@ -46,6 +46,7 @@ void LiveUpload::serviceHttps(uint32_t now) {
   if(!workerReady_)return;
   auto &worker=HttpsWorker::shared();
   if(const auto *result=worker.result(HttpsWorker::Owner::Telemetry)) {
+    bool archivedSnapshot=false;
     const bool accepted=operation_==Operation::Batch?BatchAcknowledgement::accepted(result->status,result->body,batchId_.c_str(),batchRecords_.size()):UploadEvidence::acceptedResponse(result->status,result->body);
     ++performance_.requests;if(result->reused)++performance_.reused;
     performance_.lastRequestMs=result->durationMs;
@@ -58,6 +59,12 @@ void LiveUpload::serviceHttps(uint32_t now) {
       if(accepted)++performance_.batchAccepted;
       uploadEvidence_.record(accepted,now);
       if(accepted){performance_.accepted+=batchRecords_.size();batchAcknowledged_=true;batchAckIndex_=0;}
+      else if(UploadRecovery::payloadRejected(result->status)) {
+        // The envelope or one member may be invalid. Retry its records singly;
+        // never acknowledge or discard the batch on a rejection.
+        recovery_.batchRejected(batchRecords_.size());
+        batchRecords_.clear();batchPayload_="";batchId_="";backoff_=false;
+      }
       else if(result->status==404 || result->status==405) {
         // Old servers retain the original per-record path. No data is removed.
         batchEnabled_=false;batchRecords_.clear();batchPayload_="";batchId_="";backoff_=false;
@@ -66,17 +73,35 @@ void LiveUpload::serviceHttps(uint32_t now) {
     } else if(operation_==Operation::Snapshot) {
       uploadEvidence_.record(accepted,now);
       if(accepted) {
+        rejectionArchiveError_="";
         ++performance_.accepted;
         StaticJsonDocument<96> filter;filter["timestamp"]=true;
         StaticJsonDocument<192> stamp;
         if(!deserializeJson(stamp,inFlightPayload_,DeserializationOption::Filter(filter)))performance_.lastSampleEpoch=QueueAge::epoch(stamp["timestamp"]|"");
+        bool advanced = false;
         if(durableInFlight_) {
           // Capture may rotate queue segments while HTTP is pending. An ACK
           // may remove only the exact submitted head, never a newer record.
-          if(!storeForwardQueue_.popIfMatches(inFlightPayload_)) {
-            lastError_="Queue acknowledgement persistence failed";backoff_=true;
-          }
-        } else if(volatilePayload_==inFlightPayload_)volatilePayload_="";
+          advanced = storeForwardQueue_.popIfMatches(inFlightPayload_);
+        } else if(volatilePayload_==inFlightPayload_) {
+          volatilePayload_="";
+          advanced = true;
+        }
+        recovery_.recordResolved(advanced);
+        if(!advanced) { lastError_="Queue acknowledgement persistence failed";backoff_=true; }
+      } else if(result->permanentRejection) {
+        // Only the app's explicit permanent-rejection signal permits archiving.
+        // Preserve exact payload bytes before advancing the matching queue head.
+        const auto resolution=recovery_.resolveRejected(result->status,result->permanentRejection,
+            [&]{return storeForwardQueue_.preserveRejected(inFlightPayload_,result->status);},
+            [&]{return !durableInFlight_ || storeForwardQueue_.popIfMatches(inFlightPayload_);});
+        if(resolution==UploadRecovery::Resolution::Archived) {
+          archivedSnapshot=true;
+          if(!durableInFlight_ && volatilePayload_==inFlightPayload_)volatilePayload_="";
+          backoff_=false;rejectionArchiveError_="";
+        } else if(resolution==UploadRecovery::Resolution::AdvanceFailed)
+          rejectionArchiveError_="Rejected upload archived; queue acknowledgement failed";
+        else rejectionArchiveError_=storeForwardQueue_.lastError();
       }
       inFlightPayload_="";
     } else {
@@ -107,7 +132,8 @@ void LiveUpload::serviceHttps(uint32_t now) {
       if(accepted && !authorization_ && bearerRotation_ && bearerRotation_->hasCandidate())statusRequested_=true;
     }
     httpsConnected_=accepted;
-    if(!accepted)lastError_="HTTPS request failed ("+String(result->status)+"); queued data retained";
+    if(archivedSnapshot)lastError_="Rejected upload preserved in recovery archive";
+    else if(!accepted)lastError_="HTTPS request failed ("+String(result->status)+"); queued data retained";
     else if(!backoff_)lastError_=storeForwardQueue_.pendingRecords()?"Replaying onboard queue: "+String(storeForwardQueue_.pendingRecords())+" pending":"";
     worker.release(HttpsWorker::Owner::Telemetry);operation_=Operation::None;
     refreshQueueOldest();
@@ -140,7 +166,7 @@ void LiveUpload::serviceHttps(uint32_t now) {
     return;
   }
   if(!batchPayload_.isEmpty()){submitHttps(Operation::Batch,batchPayload_);return;}
-  if(batchEnabled_ && storeForwardQueue_.pendingRecords()>1) {
+  if(batchEnabled_ && recovery_.allowBatch() && storeForwardQueue_.pendingRecords()>1) {
     if(storeForwardQueue_.peekBatch(batchRecords_,8,HttpsExchange::kBodyLimit-256) && batchRecords_.size()>1) {
       char id[33];snprintf(id,sizeof(id),"%08lx%08lx%08lx%08lx",static_cast<unsigned long>(esp_random()),static_cast<unsigned long>(esp_random()),static_cast<unsigned long>(esp_random()),static_cast<unsigned long>(esp_random()));
       batchId_=id;batchPayload_="{\"schema_version\":1,\"device_id\":\""+jsonEscape(deviceId_)+"\",\"batch_id\":\""+batchId_+"\",\"snapshots\":[";

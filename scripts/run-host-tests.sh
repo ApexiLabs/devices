@@ -62,7 +62,7 @@ node "$ROOT_DIR/tests/logger_authorization_ui_tests.cjs"
   "$ROOT_DIR/tests/upload_evidence_tests.cpp" -o "$BUILD_DIR/upload_evidence_tests"
 "$BUILD_DIR/upload_evidence_tests"
 /usr/bin/c++ -std=c++17 -Wall -Wextra -Werror -DESP32 -I"$ROOT_DIR/tests/storage_fakes" -I"$ROOT_DIR/tests/fakes" -I"$ROOT_DIR/logger/firmware/include" -I"$ROOT_DIR/dash/firmware/include" -I"$ROOT_DIR/shared/protocols" -I"$ROOT_DIR/shared/libraries" \
-  "$ROOT_DIR/tests/store_forward_batch_tests.cpp" "$ROOT_DIR/tests/storage_fakes/LittleFS.cpp" "$ROOT_DIR/logger/firmware/src/StoreForwardQueue.cpp" "$ROOT_DIR/logger/firmware/src/StatusDiagnostics.cpp" -o "$BUILD_DIR/store_forward_batch_tests"
+  "$ROOT_DIR/tests/store_forward_batch_tests.cpp" "$ROOT_DIR/tests/storage_fakes/LittleFS.cpp" "$ROOT_DIR/logger/firmware/src/StoreForwardQueue.cpp" "$ROOT_DIR/logger/firmware/src/RejectedUploads.cpp" "$ROOT_DIR/logger/firmware/src/StatusDiagnostics.cpp" -o "$BUILD_DIR/store_forward_batch_tests"
 "$BUILD_DIR/store_forward_batch_tests"
 node "$ROOT_DIR/tests/dash_ui_tests.cjs"
 
@@ -100,7 +100,7 @@ fi
   -I"$ROOT_DIR/tests/fakes" \
   -I"$ROOT_DIR/logger/firmware/include" -I"$ROOT_DIR/dash/firmware/include" -I"$ROOT_DIR/shared/protocols" -I"$ROOT_DIR/shared/libraries" \
   "$ROOT_DIR/tests/fakes/LittleFS.cpp" \
-  "$ROOT_DIR/logger/firmware/src/StoreForwardQueue.cpp" \
+  "$ROOT_DIR/logger/firmware/src/StoreForwardQueue.cpp" "$ROOT_DIR/logger/firmware/src/RejectedUploads.cpp" \
   "$ROOT_DIR/logger/firmware/src/StatusDiagnostics.cpp" \
   "$ROOT_DIR/tests/store_forward_queue_tests.cpp" \
   -o "$BUILD_DIR/store_forward_queue_tests"
@@ -138,3 +138,15 @@ for target in ESP32 ESP8266; do
 done
 
 python3 -m unittest "$ROOT_DIR/tests/test_product_layout.py"
+
+/usr/bin/c++ -std=c++17 -Wall -Wextra -Werror -DESP32 \
+  -I"$ROOT_DIR/tests/storage_fakes" -I"$ROOT_DIR/tests/fakes" -I"$ROOT_DIR/logger/firmware/include" \
+  "$ROOT_DIR/tests/upload_recovery_tests.cpp" "$ROOT_DIR/tests/storage_fakes/LittleFS.cpp" \
+  "$ROOT_DIR/logger/firmware/src/StoreForwardQueue.cpp" "$ROOT_DIR/logger/firmware/src/RejectedUploads.cpp" \
+  "$ROOT_DIR/logger/firmware/src/StatusDiagnostics.cpp" -o "$BUILD_DIR/upload_recovery_tests"
+"$BUILD_DIR/upload_recovery_tests"
+/usr/bin/c++ -std=c++17 -Wall -Wextra -Werror -DESP32 \
+  -I"$ROOT_DIR/tests/csv_fakes" -I"$ROOT_DIR/logger/firmware/include" -I"$ROOT_DIR/shared/libraries" -I"$ROOT_DIR/shared/protocols" \
+  "$ROOT_DIR/tests/csv_recording_tests.cpp" "$ROOT_DIR/logger/firmware/src/CsvLogger.cpp" \
+  "$ROOT_DIR/logger/firmware/src/Logic.cpp" -o "$BUILD_DIR/csv_recording_tests"
+"$BUILD_DIR/csv_recording_tests"

@@ -36,8 +36,10 @@ int File::available() const {
   return open_ ? static_cast<int>(bytes_->size() - position_) : 0;
 }
 
-size_t File::write(const uint8_t *input, const size_t length) {
+size_t File::write(const uint8_t *input, size_t length) {
   if (!open_ || mode_ == FILE_READ || input == nullptr) return 0;
+  length = std::min(length, nextFileWriteLimit);
+  nextFileWriteLimit = size_t(-1);
   if (position_ + length > bytes_->size()) bytes_->resize(position_ + length);
   std::copy_n(input, length, bytes_->data() + position_);
   position_ += length;
@@ -88,6 +90,7 @@ File LittleFSClass::open(const char *path, const uint8_t mode) {
 }
 
 void LittleFSClass::reset() {
+  nextFileWriteLimit = size_t(-1);
   files_.clear();
   mountResult_ = true;
   lastFormatOnFail_ = false;

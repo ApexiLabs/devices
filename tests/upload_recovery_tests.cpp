@@ -36,7 +36,7 @@ int main() {
   String saved; int status=0;
   assert(queue.readRejected(0,saved,status) && saved==bad && status==422);
   assert(queue.peek(saved) && saved=="good");
-  assert(queue.popIfMatches(saved)); recovery.recordResolved();
+  assert(queue.popIfMatches(saved)); recovery.recordResolved(true);
   assert(recovery.allowBatch()); // A later good record can upload, batching recovers.
 
   // A reset after archive commit but before queue pop duplicates neither data nor slots.
@@ -56,6 +56,18 @@ int main() {
   assert(rebooted.pendingRecords()==1);
   assert(rebooted.readRejected(1,saved,status) && saved=="next");
   assert(rebooted.popIfMatches("next"));
+
+  // A server-accepted singleton is unresolved until its queue ACK commits.
+  assert(rebooted.enqueue("accepted-singleton"));
+  recovery.batchRejected(1);
+  LittleFS.failNextRename();
+  const bool firstAdvance = rebooted.popIfMatches("accepted-singleton");
+  recovery.recordResolved(firstAdvance);
+  assert(!firstAdvance && !recovery.allowBatch());
+  assert(rebooted.pendingRecords() == 1);
+  const bool retryAdvance = rebooted.popIfMatches("accepted-singleton");
+  recovery.recordResolved(retryAdvance);
+  assert(retryAdvance && recovery.allowBatch());
 
   // Archive capacity never rolls over or overwrites earlier payloads.
   for(size_t i=2;i<StoreForwardQueue::kRejectedSlots;++i)

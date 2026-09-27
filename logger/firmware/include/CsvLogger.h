@@ -29,7 +29,7 @@ class CsvLogger {
   bool ensureFileOpen(const String &dateStamp,
                       const std::array<SensorSnapshot, AppConfig::kSensorCount> &sensors);
   String normalizeFileName(const String &userVisibleName) const;
-  void writeHeaderIfNeeded(const std::array<SensorSnapshot, AppConfig::kSensorCount> &sensors);
+  bool writeHeaderIfNeeded(const std::array<SensorSnapshot, AppConfig::kSensorCount> &sensors);
 
   bool ready_ = false;
   String currentFileName_;

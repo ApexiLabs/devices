@@ -151,7 +151,7 @@ Current behavior:
 - The retained MQTT status topic now reflects both online and offline state so downstream consumers do not keep stale liveness.
 - The firmware exposes live upload state through the local web UI and `/api/live`.
 - The ESP32 local UI exposes onboard queue readiness, pending records/bytes, drops, and queue errors.
-- Local SD logging remains optional for long-duration/removable CSV archives.
+- Local SD logging remains optional for long-duration/removable CSV archives. A short daily CSV header write fails that logging interval and retries from a clean file; see `docs/https-replay.md` for recovery behaviour.
 
 ### Starting and stopping a live session
 

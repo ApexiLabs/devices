@@ -74,18 +74,21 @@ void LiveUpload::serviceHttps(uint32_t now) {
       uploadEvidence_.record(accepted,now);
       if(accepted) {
         rejectionArchiveError_="";
-        recovery_.recordResolved();
         ++performance_.accepted;
         StaticJsonDocument<96> filter;filter["timestamp"]=true;
         StaticJsonDocument<192> stamp;
         if(!deserializeJson(stamp,inFlightPayload_,DeserializationOption::Filter(filter)))performance_.lastSampleEpoch=QueueAge::epoch(stamp["timestamp"]|"");
+        bool advanced = false;
         if(durableInFlight_) {
           // Capture may rotate queue segments while HTTP is pending. An ACK
           // may remove only the exact submitted head, never a newer record.
-          if(!storeForwardQueue_.popIfMatches(inFlightPayload_)) {
-            lastError_="Queue acknowledgement persistence failed";backoff_=true;
-          }
-        } else if(volatilePayload_==inFlightPayload_)volatilePayload_="";
+          advanced = storeForwardQueue_.popIfMatches(inFlightPayload_);
+        } else if(volatilePayload_==inFlightPayload_) {
+          volatilePayload_="";
+          advanced = true;
+        }
+        recovery_.recordResolved(advanced);
+        if(!advanced) { lastError_="Queue acknowledgement persistence failed";backoff_=true; }
       } else if(result->permanentRejection) {
         // Only the app's explicit permanent-rejection signal permits archiving.
         // Preserve exact payload bytes before advancing the matching queue head.

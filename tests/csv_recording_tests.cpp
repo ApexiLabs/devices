@@ -12,6 +12,13 @@ int main(){
   assert(csv.begin(18,spi));
   std::array<SensorSnapshot,AppConfig::kSensorCount> sensors{};
   for(size_t i=0;i<sensors.size();++i){sensors[i].id=AppConfig::kSensorConfigs[i].id;sensors[i].filteredValue=12.5;sensors[i].loopCurrentmA=4;}
+  // A partial header must not be mistaken for a successfully recorded row.
+  nextPrintLimit=5;
+  assert(!csv.logRow(clock,0,sensors));
+  assert(csv.rowsWritten()==0 && csv.lastError()=="CSV header write failed");
+  assert(!SD.exists("/logs-20260924.csv"));
+  assert(csv.logRow(clock,250,sensors));
+  assert(SD.files.at("/logs-20260924.csv")->find("timestamp,uptime_ms") == 0);
   HttpsExchange exchange;UploadRecovery recovery;
   assert(exchange.submit("https://invalid", "{}", "test", "", ""));
   // Keep the real HTTP exchange pending while exercising the real CSV writer.
@@ -27,7 +34,7 @@ int main(){
     assert(csv.logRow(clock,30000+csv.rowsWritten(),sensors));
     exchange.release();assert(exchange.submit("https://invalid","{}","test","",""));
   }
-  assert(csv.rowsWritten()==108 && csv.lastError().isEmpty() && csvFlushes>1);
+  assert(csv.rowsWritten()==109 && csv.lastError().isEmpty() && csvFlushes>1);
   const auto before=csv.rowsWritten();
   nextPrintLimit=5;
   assert(!csv.logRow(clock,40000,sensors));
@@ -38,5 +45,14 @@ int main(){
   const auto &bytes=*SD.files.at("/logs-20260924.csv");
   assert(bytes.find("\n40250,")!=std::string::npos); // Partial row cannot swallow next row.
   csv.disable();assert(!csv.logRow(clock,40500,sensors));
+  // If the partial header cannot be removed, fail closed instead of appending
+  // valid rows beneath a malformed header and reporting a healthy card.
+  SD.files.clear();
+  CsvLogger blocked;assert(blocked.begin(18,spi));
+  SD.failNextRemove=true;nextPrintLimit=5;
+  assert(!blocked.logRow(clock,40750,sensors));
+  assert(!blocked.isReady() && blocked.rowsWritten()==0);
+  assert(blocked.lastError()=="CSV header write failed; incomplete file could not be removed");
+  assert(!blocked.logRow(clock,41000,sensors) && blocked.rowsWritten()==0);
   std::cout<<"CSV recording continues through pending, rejected and failed uploads\n";
 }
